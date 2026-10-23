@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Renko Stats</title>
+  <meta name="theme-color" content="#0f766e">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230f766e'/%3E%3Cpath fill='white' d='M5 18h3v-6H5zm5.5 0h3V6h-3zm5.5 0h3v-9h-3z'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+  <script src="config.js"></script>
+</head>
+<body>
+  <div id="demoBanner" class="demo-banner hidden">Modalità demo · dati di prova</div>
+
+  <!-- LOGIN -->
+  <section id="login" class="login-wrap hidden">
+    <form class="login-card" id="loginForm">
+      <div class="brand"><span class="brand-mark"><svg viewBox="0 0 24 24"><path d="M5 18h3v-6H5zm5.5 0h3V6h-3zm5.5 0h3v-9h-3z"/></svg></span>Renko Stats</div>
+      <p class="muted" style="margin:8px 0 0">Statistiche di vendita dei tuoi locali</p>
+      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required></div>
+      <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+      <button class="btn primary" style="width:100%;margin-top:18px" type="submit">Accedi</button>
+      <button class="btn" style="width:100%;margin-top:8px" type="button" id="forgotBtn">Password dimenticata</button>
+      <div class="error" id="loginError"></div>
+    </form>
+  </section>
+
+  <!-- APP -->
+  <section id="app" class="hidden">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand"><span class="brand-mark"><svg viewBox="0 0 24 24"><path d="M5 18h3v-6H5zm5.5 0h3V6h-3zm5.5 0h3v-9h-3z"/></svg></span><span class="brand-name">Renko Stats</span></div>
+        <select id="storeSelect" class="store-select" aria-label="Negozio"></select>
+        <span class="spacer"></span>
+        <span id="syncInfo" class="pill"></span>
+        <button class="btn small" id="themeBtn" title="Tema chiaro/scuro">Tema</button>
+        <span class="user-chip" id="userChip"></span>
+        <button class="btn small" id="logoutBtn">Esci</button>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="overview">Panoramica</button>
+        <button class="tab" data-tab="products">Prodotti</button>
+        <button class="tab" data-tab="payments">Pagamenti</button>
+        <button class="tab" data-tab="finance">Finanziario</button>
+        <button class="tab" data-tab="hours">Fasce orarie</button>
+        <button class="tab" data-tab="calendar">Calendario</button>
+        <button class="tab" data-tab="monitor">Monitoraggio</button>
+        <button class="tab hidden" data-tab="admin" id="adminTab">Admin</button>
+      </nav>
+    </header>
+
+    <main>
+      <div class="filters" id="filters">
+        <div class="seg" id="presets">
+          <button data-p="today">Oggi</button>
+          <button data-p="yesterday" class="active">Ieri</button>
+          <button data-p="7d">7 giorni</button>
+          <button data-p="month">Mese</button>
+          <button data-p="prevmonth">Mese prec.</button>
+          <button data-p="30d">30 giorni</button>
+          <button data-p="year">Anno</button>
+        </div>
+        <div class="range-inputs">
+          <input type="date" id="dFrom" aria-label="Dal"> <span class="muted">→</span> <input type="date" id="dTo" aria-label="Al">
+        </div>
+        <span class="range-label" id="rangeLabel"></span>
+      </div>
+
+      <div id="view"></div>
+    </main>
+  </section>
+
+  <dialog id="dlg"><div class="dlg-head"><span id="dlgTitle"></span><button class="btn small" id="dlgClose">Chiudi</button></div><div class="dlg-body" id="dlgBody"></div></dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
