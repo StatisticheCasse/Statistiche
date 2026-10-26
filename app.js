@@ -4,7 +4,7 @@
   "use strict";
 
   const CFG = window.RENKO_CONFIG || {};
-  const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX");
+  const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -44,16 +44,6 @@
   function realApi() {
     const sb = supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
     const unwrap = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
-    const fn = async (name, body) => {
-      const { data, error } = await sb.functions.invoke(name, { body });
-      if (error) {
-        let msg = error.message;
-        try { const j = await error.context.json(); msg = j.error || msg; } catch { /* ok */ }
-        throw new Error(msg);
-      }
-      if (data?.error) throw new Error(data.error);
-      return data;
-    };
     return {
       async user() { const { data } = await sb.auth.getSession(); return data.session?.user ?? null; },
       async login(email, password) { unwrap(await sb.auth.signInWithPassword({ email, password })); },
@@ -67,12 +57,26 @@
       async calendar(id, month) { return unwrap(await sb.rpc("get_calendar", { p_store: id, p_month: month })); },
       async devices() { return unwrap(await sb.rpc("get_devices_status")); },
       async syncLog(id) { return unwrap(await sb.from("sync_log").select("*").eq("store_id", id).order("at", { ascending: false }).limit(40)); },
-      async emailLog(id) { return unwrap(await sb.from("email_log").select("*").eq("store_id", id).order("created_at", { ascending: false }).limit(60)); },
+      async emailLog(id) { await sb.rpc("report_refresh_status").catch(() => null); return unwrap(await sb.from("email_log").select("*").eq("store_id", id).order("created_at", { ascending: false }).limit(60)); },
       async saveSettings(id, s) {
         unwrap(await sb.rpc("update_store_settings", { p_store: id, p_report_enabled: s.report_enabled, p_report_emails: s.report_emails, p_offline_alert_minutes: s.offline_alert_minutes }));
       },
-      async report(body) { return fn("daily-report", body); },
-      async admin(body) { return fn("admin-api", body); },
+      async signUp(email, password) { unwrap(await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } })); },
+      // Mail: tutto con funzioni del database (nessuna Edge Function)
+      async report(b) {
+        if (b.mode === "preview") return unwrap(await sb.rpc("report_preview", { p_store: b.store_id, p_day: b.day }));
+        return { result: unwrap(await sb.rpc("report_send", { p_store: b.store_id, p_day: b.day, p_test: b.mode === "test" })) };
+      },
+      async admin(b) {
+        switch (b.action) {
+          case "list_members": return { members: unwrap(await sb.rpc("admin_list_members", { p_store: b.store_id })) };
+          case "create_device": { const r = unwrap(await sb.rpc("admin_create_device", { p_store: b.store_id, p_name: b.name })); return { activation_code: activationCode(r.key, r.store) }; }
+          case "regen_device_key": { const r = unwrap(await sb.rpc("admin_regen_device_key", { p_device: b.device_id })); return { activation_code: activationCode(r.key, r.store) }; }
+          case "add_member": return unwrap(await sb.rpc("admin_add_member", { p_store: b.store_id, p_email: b.email, p_role: b.role }));
+          case "remove_member": unwrap(await sb.rpc("admin_remove_member", { p_store: b.store_id, p_user: b.user_id })); return {};
+        }
+        throw new Error("azione sconosciuta");
+      },
       async upsertStore(s) {
         if (s.id) return unwrap(await sb.from("stores").update(s).eq("id", s.id).select().single());
         return unwrap(await sb.from("stores").insert(s).select().single());
@@ -89,7 +93,7 @@
     const demoStore = { id: "demo", name: "Piatti e Fagotti (demo)", code: "PEF", address: "Via Arnolfo 27, Firenze", day_cutoff_hour: 5, report_enabled: true, report_emails: ["titolare@example.com"], offline_alert_minutes: 180 };
     return {
       async user() { return { id: "demo", email: "demo@renkosoft.it" }; },
-      async login() {}, async logout() { location.search = ""; }, async resetPassword() {}, async setPassword() {}, onAuth() {},
+      async login() {}, async signUp() {}, async logout() { location.search = ""; }, async resetPassword() {}, async setPassword() {}, onAuth() {},
       async isAdmin() { return true; },
       async stores() { return [demoStore]; },
       async stats(id, from, to) {
@@ -112,6 +116,13 @@
       async admin(b) { return b.action === "list_members" ? { members: [{ user_id: "u1", email: "titolare@example.com", role: "owner" }] } : { activation_code: "RS1.eyJ1IjoiaHR0cHM6Ly9kZW1vIiwiayI6ImRlbW8iLCJzIjoiZGVtbyJ9" }; },
       async upsertStore(s) { return { ...demoStore, ...s }; }, async deleteStore() {}, async updateDevice() {}, async deleteDevice() {},
     };
+  }
+
+  // Codice da incollare nello spooler: indirizzo Supabase + anon key + chiave del dispositivo
+  function activationCode(key, storeName) {
+    const json = JSON.stringify({ u: CFG.SUPABASE_URL, a: CFG.SUPABASE_ANON_KEY, k: key, s: storeName });
+    const b64 = btoa(unescape(encodeURIComponent(json))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return "RS1." + b64;
   }
 
   const api = DEMO ? demoApi() : realApi();
@@ -466,7 +477,7 @@
       </div>
       ${card("Registro email", "Ogni invio è registrato: se una mail non arriva qui vedi l'errore e puoi reinviarla", `<div class="table-wrap"><table class="data"><thead><tr><th>Inviata</th><th>Giornata</th><th>Tipo</th><th>Esito</th><th>Destinatari</th><th></th></tr></thead><tbody>
         ${elog.map((l) => `<tr><td>${fmtTs(l.created_at)}</td><td>${l.day ? fmtDay(l.day, { weekday: "short", day: "numeric", month: "short" }) : ""}</td><td>${{ daily: "Giornaliera", alert: "Avviso offline", test: "Test" }[l.kind] || l.kind}</td>
-          <td>${l.status === "sent" ? `<span class="pill ok"><span class="dot"></span>inviata</span>` : l.status === "skipped" ? `<span class="pill warn"><span class="dot"></span>saltata</span>` : `<span class="pill err"><span class="dot"></span>errore</span>`}${l.error ? `<div class="muted" style="font-size:11px">${esc(l.error)}</div>` : ""}</td>
+          <td>${l.status === "sent" ? `<span class="pill ok"><span class="dot"></span>inviata</span>` : l.status === "queued" ? `<span class="pill"><span class="dot"></span>in invio…</span>` : l.status === "skipped" ? `<span class="pill warn"><span class="dot"></span>saltata</span>` : `<span class="pill err"><span class="dot"></span>errore</span>`}${l.error ? `<div class="muted" style="font-size:11px">${esc(l.error)}</div>` : ""}</td>
           <td class="muted">${esc((l.recipients || []).join(", "))}</td>
           <td>${l.day && l.kind !== "alert" ? `<button class="btn small" data-resend="${l.day}">Reinvia</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Nessuna email inviata</td></tr>`}
       </tbody></table></div>`)}`;
@@ -486,10 +497,10 @@
           $("#prevFrame").srcdoc = r.html;
         } catch (err) { toast(err.message); }
       };
-      const send = async (body, ok) => { try { const r = await api.report(body); toast(r.result?.status === "sent" ? ok : `Esito: ${r.result?.status} ${r.result?.error || ""}`); render(); } catch (err) { toast(err.message); } };
-      $("#mSend").onclick = () => send({ mode: "send", store_id: S.storeId, day: S.to }, "Mail inviata ai destinatari");
-      $("#mTest").onclick = () => send({ mode: "test", store_id: S.storeId, day: S.to }, `Mail di test inviata a ${S.user.email}`);
-      $$("[data-resend]").forEach((b) => b.onclick = () => send({ mode: "send", store_id: S.storeId, day: b.dataset.resend }, "Mail reinviata"));
+      const send = async (body, ok) => { try { const r = await api.report(body); toast(["sent", "queued"].includes(r.result?.status) ? ok : `Esito: ${r.result?.status} ${r.result?.error || ""}`); render(); } catch (err) { toast(err.message); } };
+      $("#mSend").onclick = () => send({ mode: "send", store_id: S.storeId, day: S.to }, "Mail in invio ai destinatari");
+      $("#mTest").onclick = () => send({ mode: "test", store_id: S.storeId, day: S.to }, `Mail di test in invio a ${S.user.email}`);
+      $$("[data-resend]").forEach((b) => b.onclick = () => send({ mode: "send", store_id: S.storeId, day: b.dataset.resend }, "Mail in reinvio"));
     } };
   };
 
@@ -532,9 +543,10 @@
           <form id="memForm" style="margin-top:12px">
             <div class="grid cols-2" style="gap:8px">
               <div class="field"><label>Email</label><input type="email" id="memEmail" required></div>
-              <div class="field"><label>Password iniziale (vuoto = invito via email)</label><input type="text" id="memPwd"></div>
+              <div class="field"><label>Ruolo</label><select id="memRole"><option value="owner">Proprietario</option><option value="viewer">Visualizzatore</option></select></div>
             </div>
-            <div class="toolbar" style="margin-top:10px"><select id="memRole" style="width:auto"><option value="owner">Proprietario</option><option value="viewer">Visualizzatore</option></select><button class="btn primary" type="submit">Aggiungi utente</button></div>
+            <div class="muted" style="font-size:12px;margin-top:8px">L'utente deve prima registrarsi dalla pagina di accesso con <b>Crea account</b>, poi lo abiliti qui.</div>
+            <div class="toolbar" style="margin-top:10px"><button class="btn primary" type="submit">Aggiungi utente</button></div>
           </form>`) : ""}
       </div>`;
     return { html, after() {
@@ -575,8 +587,8 @@
       $("#memForm") && ($("#memForm").onsubmit = async (e) => {
         e.preventDefault();
         try {
-          const r = await api.admin({ action: "add_member", store_id: s.id, email: $("#memEmail").value, password: $("#memPwd").value || undefined, role: $("#memRole").value });
-          toast(r.invited ? "Invito inviato via email" : r.created ? "Utente creato" : "Accesso aggiunto"); render();
+          await api.admin({ action: "add_member", store_id: s.id, email: $("#memEmail").value, role: $("#memRole").value });
+          toast("Accesso aggiunto"); render();
         } catch (err) { toast(err.message); }
       });
     } };
@@ -615,7 +627,9 @@
     } catch (err) {
       if (seq !== renderSeq) return;
       killCharts();
-      view.innerHTML = empty("Errore: " + esc(err.message));
+      view.innerHTML = DEMO
+        ? empty("Modalità demo: per vedere i dati reali inserisci la <b>anon key</b> di Supabase nel file <b>config.js</b> e ricarica la pagina.")
+        : empty("Errore: " + esc(err.message));
     } finally {
       if (seq === renderSeq) view.classList.remove("loading");
     }
@@ -712,6 +726,14 @@
         await api.login($("#email").value, $("#password").value);
         startApp(await api.user());
       } catch (err) { $("#loginError").textContent = err.message === "Invalid login credentials" ? "Email o password errati" : err.message; }
+    };
+    $("#signupBtn").onclick = async () => {
+      const em = $("#email").value, pw = $("#password").value;
+      if (!em || pw.length < 8) { $("#loginError").textContent = "Inserisci email e una password di almeno 8 caratteri"; return; }
+      try {
+        await api.signUp(em, pw);
+        $("#loginError").textContent = "Account creato. Conferma dal link ricevuto via email, poi chiedi all'amministratore di abilitarti al negozio.";
+      } catch (err) { $("#loginError").textContent = err.message; }
     };
     $("#forgotBtn").onclick = async () => {
       const em = $("#email").value;
