@@ -594,6 +594,152 @@
     } };
   };
 
+  // ------------------------------------------------------------------ export Excel / PDF
+  const LIBS = {
+    xlsx: "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+    jspdf: "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+    autotable: "https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js",
+  };
+  const loaded = {};
+  function loadScript(url) {
+    return loaded[url] ??= new Promise((ok, ko) => {
+      const el = document.createElement("script");
+      el.src = url; el.onload = ok; el.onerror = () => { delete loaded[url]; ko(new Error("Impossibile caricare " + url)); };
+      document.head.appendChild(el);
+    });
+  }
+  const fileBase = () => `renko_${(cur()?.name || "negozio").replace(/[^a-z0-9]+/gi, "_")}_${S.from}${S.from !== S.to ? "_" + S.to : ""}`;
+  async function statsForExport() {
+    if (NEEDS_STATS.includes(S.tab) && S.stats) return S.stats;
+    return await api.stats(S.storeId, S.from, S.to);
+  }
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+  function exportSections(st) {
+    const k = st.kpi;
+    const cut = st.range?.cutoff_hour ?? 0;
+    const repName = Object.fromEntries((st.departments || []).map((r) => [r.reparto, r.descrizione]));
+    const payTot = (st.payments || []).reduce((a, p) => a + p.importo, 0) || 1;
+    const repTot = (st.departments || []).reduce((a, r) => a + r.netto, 0) || 1;
+    const hours = trimHours(sortedHours(st));
+    return {
+      kpi: [
+        ["Incasso netto", round2(k.netto), "eur"], ["Vendite lorde", round2(k.lordo), "eur"], ["Sconti", round2(k.sconti), "eur"],
+        ["Abbuoni", round2(k.abbuoni), "eur"], ["di cui non fiscale", round2(k.non_fiscale), "eur"],
+        ["Incassato (pagamenti)", round2(k.incassato), "eur"], ["Scontrini", k.scontrini, "n"],
+        ["Scontrino medio", round2(k.scontrino_medio), "eur"], ["Coperti", Number(k.coperti), "n"],
+        ["Medio a coperto", round2(k.medio_coperto), "eur"], ["Pezzi venduti", Number(k.pezzi), "n"],
+        ["Righe eliminate", k.eliminati_n, "n"], ["Importo eliminato", round2(k.eliminati_importo), "eur"],
+        ["Incasso periodo precedente", round2(k.prev_netto), "eur"], ["Scontrini periodo precedente", k.prev_scontrini, "n"],
+      ],
+      tables: [
+        { name: "Giornaliero", cols: ["Data", "Giorno", "Scontrini", "Coperti", "Incasso"], eur: [4],
+          rows: (st.daily || []).map((d) => [String(d.day).slice(0, 10), DOW[((parseD(d.day).getDay() + 6) % 7) + 1], d.scontrini, Number(d.coperti) || 0, round2(d.netto)]) },
+        { name: "Fasce orarie", cols: ["Ora", "Scontrini", "Incasso", "Medio"], eur: [2, 3],
+          rows: hours.map((h) => [`${hh(h.ora)}:00-${hh((h.ora + 1) % 24)}:00`, h.scontrini, round2(h.netto), round2(h.scontrini ? h.netto / h.scontrini : 0)]) },
+        { name: "Pagamenti", cols: ["Tipo", "Transazioni", "Importo", "%"], eur: [2],
+          rows: (st.payments || []).map((p) => [p.descrizione, p.n, round2(p.importo), round2((p.importo / payTot) * 100)]) },
+        { name: "Reparti", cols: ["Reparto", "Quantità", "Incasso", "%"], eur: [2],
+          rows: (st.departments || []).map((r) => [r.descrizione, Number(r.qta), round2(r.netto), round2((r.netto / repTot) * 100)]) },
+        { name: "Prodotti", cols: ["Codice", "Prodotto", "Reparto", "Quantità", "Incasso", "Sconti", "Q.tà periodo prec."], eur: [4, 5],
+          rows: (st.products || []).map((p) => [p.codint, p.descrizione, repName[p.reparto] ?? p.reparto, Number(p.qta), round2(p.netto), round2(p.sconti), Number(p.prev_qta) || 0]) },
+        { name: "IVA", cols: ["Aliquota %", "Imponibile", "Imposta", "Totale"], eur: [1, 2, 3],
+          rows: (st.iva || []).map((i) => [Number(i.aliquota), round2(i.imponibile), round2(i.imposta), round2(i.totale)]) },
+        { name: "Operatori", cols: ["Operatore", "Scontrini", "Incasso"], eur: [2],
+          rows: (st.operators || []).map((o) => [o.descrizione, o.scontrini, round2(o.netto)]) },
+        { name: "Camerieri", cols: ["Cameriere", "Scontrini", "Incasso"], eur: [2],
+          rows: (st.waiters || []).map((o) => [o.descrizione, o.scontrini, round2(o.netto)]) },
+        { name: "Eliminati", cols: ["Codice", "Articolo", "Quantità", "Importo"], eur: [3],
+          rows: (st.deleted || []).map((d) => [d.codint, d.descrizione, Number(d.qta), round2(d.importo)]) },
+      ],
+      cut,
+    };
+  }
+
+  async function exportExcel() {
+    const btn = $("#xlsBtn"); btn.disabled = true;
+    try {
+      const [st] = await Promise.all([statsForExport(), loadScript(LIBS.xlsx)]);
+      const X = window.XLSX, sec = exportSections(st), wb = X.utils.book_new();
+      const EUR = '#,##0.00 "€"';
+      const sheet = (aoa, widths, eurCells) => {
+        const ws = X.utils.aoa_to_sheet(aoa);
+        ws["!cols"] = widths.map((w) => ({ wch: w }));
+        eurCells.forEach(([r, c]) => { const a = X.utils.encode_cell({ r, c }); if (ws[a] && typeof ws[a].v === "number") ws[a].z = EUR; });
+        return ws;
+      };
+      const head = [["Renko Stats — " + (cur()?.name || "")], ["Periodo", rangeText()], []];
+      const kAoa = [...head, ["Indicatore", "Valore"], ...sec.kpi.map(([l, v]) => [l, v])];
+      const kEur = sec.kpi.map((x, i) => x[2] === "eur" ? [head.length + 1 + i, 1] : null).filter(Boolean);
+      X.utils.book_append_sheet(wb, sheet(kAoa, [30, 16], kEur), "Riepilogo");
+      for (const t of sec.tables) {
+        if (!t.rows.length) continue;
+        const aoa = [t.cols, ...t.rows];
+        const eurCells = [];
+        t.rows.forEach((_, ri) => t.eur.forEach((c) => eurCells.push([ri + 1, c])));
+        const widths = t.cols.map((c, i) => Math.max(c.length + 2, ...t.rows.slice(0, 300).map((r) => String(r[i] ?? "").length + 2)));
+        const ws = sheet(aoa, widths.map((w) => Math.min(w, 45)), eurCells);
+        ws["!autofilter"] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: t.rows.length, c: t.cols.length - 1 } }) };
+        X.utils.book_append_sheet(wb, ws, t.name);
+      }
+      X.writeFile(wb, fileBase() + ".xlsx");
+    } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+  }
+
+  async function exportPdf() {
+    const btn = $("#pdfBtn"); btn.disabled = true;
+    try {
+      const st = await statsForExport();
+      await loadScript(LIBS.jspdf); await loadScript(LIBS.autotable);
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+      const sec = exportSections(st);
+      const W = doc.internal.pageSize.getWidth();
+      const teal = [15, 118, 110], muted = [100, 116, 139];
+      const fmt = (v, kind) => kind === "eur" ? eur(v) : num(v, 2);
+      // intestazione
+      doc.setFillColor(...teal); doc.rect(0, 0, W, 28, "F");
+      doc.setTextColor(255, 255, 255); doc.setFontSize(9); doc.text("RIEPILOGO STATISTICHE", 14, 10);
+      doc.setFontSize(18); doc.setFont(undefined, "bold"); doc.text(cur()?.name || "", 14, 18);
+      doc.setFontSize(10); doc.setFont(undefined, "normal"); doc.text(rangeText(), 14, 24);
+      doc.setTextColor(15, 23, 42);
+      // KPI in due colonne
+      const kp = sec.kpi.map(([l, v, t]) => [l, fmt(v, t)]);
+      const half = Math.ceil(kp.length / 2);
+      const kRows = kp.slice(0, half).map((r, i) => [...r, ...(kp[half + i] || ["", ""])]);
+      const base = { theme: "grid", styles: { fontSize: 8.5, cellPadding: 1.6, lineColor: [226, 232, 240], lineWidth: 0.1 },
+        headStyles: { fillColor: teal, textColor: 255, fontStyle: "bold" }, margin: { left: 14, right: 14 } };
+      doc.autoTable({ ...base, startY: 34, body: kRows, theme: "plain",
+        columnStyles: { 0: { textColor: muted }, 1: { fontStyle: "bold", halign: "right" }, 2: { textColor: muted }, 3: { fontStyle: "bold", halign: "right" } } });
+      const section = (title, t, limit) => {
+        if (!t.rows.length) return;
+        let y = doc.lastAutoTable.finalY + 8;
+        if (y > 260) { doc.addPage(); y = 18; }
+        doc.setFontSize(11); doc.setFont(undefined, "bold"); doc.text(title, 14, y); doc.setFont(undefined, "normal");
+        const rows = (limit ? t.rows.slice(0, limit) : t.rows).map((r) => r.map((v, i) => t.eur.includes(i) ? eur(v) : typeof v === "number" ? num(v, 2) : String(v ?? "")));
+        const colStyles = {}; t.cols.forEach((_, i) => { if (i > 0 && typeof t.rows[0][i] === "number") colStyles[i] = { halign: "right" }; });
+        doc.autoTable({ ...base, startY: y + 2, head: [t.cols], body: rows, columnStyles: colStyles });
+      };
+      const T = Object.fromEntries(sec.tables.map((t) => [t.name, t]));
+      section("Pagamenti", T["Pagamenti"]);
+      section("Reparti", T["Reparti"]);
+      section("Fasce orarie", T["Fasce orarie"]);
+      if ((st.range?.days || 1) > 1) section("Andamento giornaliero", T["Giornaliero"]);
+      section("IVA", T["IVA"]);
+      section("Prodotti più venduti (primi 60)", { ...T["Prodotti"], cols: T["Prodotti"].cols.slice(1, 5), eur: [3],
+        rows: T["Prodotti"].rows.map((r) => r.slice(1, 5)) }, 60);
+      section("Operatori", T["Operatori"]);
+      section("Articoli eliminati", T["Eliminati"]);
+      const n = doc.getNumberOfPages();
+      for (let i = 1; i <= n; i++) {
+        doc.setPage(i); doc.setFontSize(8); doc.setTextColor(...muted);
+        doc.text(`Renko Stats · ${cur()?.name || ""} · ${rangeText()}`, 14, 290);
+        doc.text(`pagina ${i} di ${n}`, W - 14, 290, { align: "right" });
+      }
+      doc.save(fileBase() + ".pdf");
+    } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+  }
+
   // ------------------------------------------------------------------ render
   const NEEDS_STATS = ["overview", "products", "payments", "finance", "hours"];
   let renderSeq = 0;
@@ -606,6 +752,7 @@
     $("#dFrom").value = S.from; $("#dTo").value = S.to;
     $("#rangeLabel").textContent = rangeText();
     $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && S.tab !== "monitor");
+    $("#exportBtns").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab));
     if (!S.storeId) { view.innerHTML = S.isAdmin ? "" : empty("Nessun negozio associato al tuo account. Contatta l'amministratore."); if (!S.isAdmin) return; S.tab = "admin"; }
     view.classList.add("loading");
     try {
@@ -675,6 +822,8 @@
     $("#storeSelect").onchange = (e) => { S.storeId = e.target.value; store.set("store", S.storeId); S.calMonth = null; render(); };
     $("#logoutBtn").onclick = async () => { await api.logout(); location.reload(); };
     $("#dlgClose").onclick = () => $("#dlg").close();
+    $("#xlsBtn").onclick = exportExcel;
+    $("#pdfBtn").onclick = exportPdf;
     $("#themeBtn").onclick = () => {
       const curT = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       const next = curT === "dark" ? "light" : "dark";
