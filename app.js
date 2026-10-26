@@ -3,7 +3,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.3.0";
+  const APP_VERSION = "1.4.0";
   const CFG = window.RENKO_CONFIG || {};
   console.info("Renko Stats " + APP_VERSION);
   const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
@@ -58,6 +58,7 @@
       async stats(id, from, to) { return unwrap(await sb.rpc("get_stats", { p_store: id, p_from: from, p_to: to })); },
       async calendar(id, month) { return unwrap(await sb.rpc("get_calendar", { p_store: id, p_month: month })); },
       async documents(id, from, to, kind, search) { return unwrap(await sb.rpc("get_documents", { p_store: id, p_from: from, p_to: to, p_kind: kind, p_search: search || null })); },
+      async vatDaily(id, from, to) { return unwrap(await sb.rpc("get_vat_daily", { p_store: id, p_from: from, p_to: to })); },
       async documentDetail(id, nmov, day) { return unwrap(await sb.rpc("get_document_detail", { p_store: id, p_nmov: nmov, p_day: day })); },
       async devices() { return unwrap(await sb.rpc("get_devices_status")); },
       async syncLog(id) { return unwrap(await sb.from("sync_log").select("*").eq("store_id", id).order("at", { ascending: false }).limit(40)); },
@@ -111,6 +112,7 @@
       async calendar(id, month) { await load(); return data.calendar[month.slice(0, 7)] ?? []; },
       async documents(id, f, t, kind) { await load(); return (data.documents || {})[kind] || { n: 0, totale: 0, rows: [] }; },
       async documentDetail() { return { header: {}, lines: [], payments: [] }; },
+      async vatDaily() { await load(); return data.vat || { rows: [], non_fiscale: [], docs: [] }; },
       async devices() {
         return [{ device_id: "d1", store_id: "demo", store_name: demoStore.name, name: "Tablet cassa", enabled: true, last_seen: new Date(Date.now() - 120000).toISOString(),
           last_sync_at: new Date(Date.now() - 420000).toISOString(), last_error: null, app_version: "1.0.0", db_path: "Venduto.db + Anagra.db",
@@ -415,6 +417,76 @@
           const ws = X.utils.aoa_to_sheet(aoa); const wb = X.utils.book_new();
           X.utils.book_append_sheet(wb, ws, isFt ? "Fatture" : "Documenti commerciali");
           X.writeFile(wb, `${fileBase()}_${isFt ? "fatture" : "documenti"}.xlsx`);
+        } catch (e) { toast(e.message); }
+      };
+    } };
+  };
+
+  // Riepilogo IVA giornaliero: documenti commerciali (senza non fiscali) e fatture
+  function vatTables(v) {
+    const days = [];
+    for (let d = parseD(S.from); d <= parseD(S.to); d = addDays(d, 1)) days.push(iso(d));
+    const nf = Object.fromEntries((v.non_fiscale || []).map((x) => [String(x.giorno).slice(0, 10), x.totale]));
+    const nd = {}; (v.docs || []).forEach((x) => { nd[x.tipo + String(x.giorno).slice(0, 10)] = x.n; });
+    const build = (tipo) => {
+      const rows = (v.rows || []).filter((r) => r.tipo === tipo);
+      const aliq = [...new Set(rows.map((r) => Number(r.aliquota)))].sort((a, b) => b - a);
+      const map = {}; rows.forEach((r) => { map[String(r.giorno).slice(0, 10) + "|" + Number(r.aliquota)] = r; });
+      const lines = days.map((g) => {
+        const cells = aliq.map((a) => map[g + "|" + a] || { imponibile: 0, imposta: 0, totale: 0 });
+        return { g, n: nd[tipo + g] || 0, cells, imp: cells.reduce((x, c) => x + c.imponibile, 0), iva: cells.reduce((x, c) => x + c.imposta, 0),
+          tot: cells.reduce((x, c) => x + c.totale, 0), nf: tipo === "sc" ? nf[g] || 0 : 0 };
+      }).filter((l) => l.n || l.tot || l.nf);
+      const sum = (f) => lines.reduce((x, l) => x + f(l), 0);
+      const totals = { n: sum((l) => l.n), cells: aliq.map((_, i) => ({ imponibile: sum((l) => l.cells[i].imponibile), imposta: sum((l) => l.cells[i].imposta), totale: sum((l) => l.cells[i].totale) })),
+        imp: sum((l) => l.imp), iva: sum((l) => l.iva), tot: sum((l) => l.tot), nf: sum((l) => l.nf) };
+      return { aliq, lines, totals };
+    };
+    return { sc: build("sc"), ft: build("ft") };
+  }
+
+  views.vat = async () => {
+    const v = await api.vatDaily(S.storeId, S.from, S.to);
+    const t = vatTables(v);
+    const table = (x, tipo) => {
+      if (!x.lines.length) return empty(tipo === "ft" ? "Nessuna fattura nel periodo" : "Nessun documento commerciale nel periodo");
+      const head1 = `<tr><th rowspan="2">Giorno</th><th rowspan="2" class="r">Doc.</th>${x.aliq.map((a) => `<th colspan="2" class="r" style="text-align:center">IVA ${num(a, 2)}%</th>`).join("")}<th rowspan="2" class="r">Imponibile</th><th rowspan="2" class="r">IVA</th><th rowspan="2" class="r">Totale</th>${tipo === "sc" ? '<th rowspan="2" class="r">Non fiscale<br><span style="font-weight:400;text-transform:none">(escluso)</span></th>' : ""}</tr>`;
+      const head2 = `<tr>${x.aliq.map(() => `<th class="r">Imponibile</th><th class="r">Imposta</th>`).join("")}</tr>`;
+      const row = (l) => `<tr><td>${l.g === "Totale" ? "<b>Totale</b>" : parseD(l.g).toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" })}</td><td class="r">${num(l.n)}</td>
+        ${l.cells.map((c) => `<td class="r">${eur(c.imponibile)}</td><td class="r muted">${eur(c.imposta)}</td>`).join("")}
+        <td class="r">${eur(l.imp)}</td><td class="r">${eur(l.iva)}</td><td class="r"><b>${eur(l.tot)}</b></td>${tipo === "sc" ? `<td class="r muted">${l.nf ? eur(l.nf) : ""}</td>` : ""}</tr>`;
+      return `<div class="table-wrap" style="max-height:560px;overflow:auto"><table class="data"><thead>${head1}${head2}</thead><tbody>${x.lines.map(row).join("")}</tbody>
+        <tfoot>${row({ ...x.totals, g: "Totale" })}</tfoot></table></div>`;
+    };
+    const tot = t.sc.totals.tot + t.ft.totals.tot;
+    const html = `
+      <div class="grid kpis">
+        ${kpi("Documenti commerciali", eur(t.sc.totals.tot), `<div class="delta flat">IVA ${eur(t.sc.totals.iva)} · ${num(t.sc.totals.n)} doc.</div>`, true)}
+        ${kpi("Fatture", eur(t.ft.totals.tot), `<div class="delta flat">IVA ${eur(t.ft.totals.iva)} · ${num(t.ft.totals.n)} fatture</div>`)}
+        ${kpi("Totale fiscale", eur(tot), `<div class="delta flat">IVA ${eur(t.sc.totals.iva + t.ft.totals.iva)}</div>`)}
+        ${kpi("Non fiscale (escluso)", eur(t.sc.totals.nf), `<div class="delta flat">non compreso nei totali IVA</div>`)}
+      </div>
+      <div style="margin-bottom:12px">${card("Documenti commerciali", "Scontrini per giorno e aliquota, esclusi i non fiscali", table(t.sc, "sc"), `<button class="btn small" id="vatXls">⬇ Excel IVA</button>`)}</div>
+      ${card("Fatture", "Fatture per giorno di emissione e aliquota", table(t.ft, "ft"))}
+      <div class="muted" style="font-size:11px;margin-top:8px">Imponibile e imposta sono calcolati per scorporo sul totale giornaliero di ogni aliquota: possono differire di qualche centesimo dalla chiusura del registratore, che arrotonda documento per documento.</div>`;
+    return { html, after() {
+      $("#vatXls").onclick = async () => {
+        toast("Preparo il file Excel…");
+        try {
+          await loadScript(LIBS.xlsx);
+          const X = window.XLSX, wb = X.utils.book_new();
+          for (const [tipo, name] of [["sc", "Documenti commerciali"], ["ft", "Fatture"]]) {
+            const x = t[tipo];
+            const head = ["Giorno", "N. documenti", ...x.aliq.flatMap((a) => [`Imponibile ${a}%`, `Imposta ${a}%`]), "Imponibile", "IVA", "Totale", ...(tipo === "sc" ? ["Non fiscale (escluso)"] : [])];
+            const r = (l) => [l.g, l.n, ...l.cells.flatMap((c) => [round2(c.imponibile), round2(c.imposta)]), round2(l.imp), round2(l.iva), round2(l.tot), ...(tipo === "sc" ? [round2(l.nf)] : [])];
+            const ws = X.utils.aoa_to_sheet([head, ...x.lines.map(r), r({ ...x.totals, g: "Totale" })]);
+            ws["!cols"] = head.map((h, i) => ({ wch: i === 0 ? 12 : Math.max(12, h.length + 2) }));
+            for (let ri = 1; ri <= x.lines.length + 1; ri++) for (let ci = 2; ci < head.length; ci++) {
+              const a = X.utils.encode_cell({ r: ri, c: ci }); if (ws[a]) ws[a].z = '#,##0.00 "€"';
+            }
+            X.utils.book_append_sheet(wb, ws, name);
+          }
+          X.writeFile(wb, fileBase() + "_iva.xlsx");
         } catch (e) { toast(e.message); }
       };
     } };
@@ -829,7 +901,7 @@
     $$("#presets button").forEach((b) => b.classList.toggle("active", b.dataset.p === S.preset));
     $("#dFrom").value = S.from; $("#dTo").value = S.to;
     $("#rangeLabel").textContent = rangeText();
-    $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && !["monitor", "documents"].includes(S.tab));
+    $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && !["monitor", "documents", "vat"].includes(S.tab));
     $("#exportBtns").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab));
     if (!S.storeId) { view.innerHTML = S.isAdmin ? "" : empty("Nessun negozio associato al tuo account. Contatta l'amministratore."); if (!S.isAdmin) return; S.tab = "admin"; }
     view.classList.add("loading");
