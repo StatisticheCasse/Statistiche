@@ -24,7 +24,10 @@
       <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required></div>
       <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
       <button class="btn primary" style="width:100%;margin-top:18px" type="submit">Accedi</button>
-      <button class="btn" style="width:100%;margin-top:8px" type="button" id="forgotBtn">Password dimenticata</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn" style="flex:1" type="button" id="signupBtn">Crea account</button>
+        <button class="btn" style="flex:1" type="button" id="forgotBtn">Password dimenticata</button>
+      </div>
       <div class="error" id="loginError"></div>
     </form>
   </section>
@@ -68,6 +71,10 @@
           <input type="date" id="dFrom" aria-label="Dal"> <span class="muted">→</span> <input type="date" id="dTo" aria-label="Al">
         </div>
         <span class="range-label" id="rangeLabel"></span>
+        <span class="export-btns" id="exportBtns">
+          <button class="btn small" id="xlsBtn" title="Scarica le statistiche del periodo in Excel">⬇ Excel</button>
+          <button class="btn small" id="pdfBtn" title="Scarica il riepilogo del periodo in PDF">⬇ PDF</button>
+        </span>
       </div>
 
       <div id="view"></div>
