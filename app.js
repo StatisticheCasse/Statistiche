@@ -3,7 +3,9 @@
 (() => {
   "use strict";
 
+  const APP_VERSION = "1.3.0";
   const CFG = window.RENKO_CONFIG || {};
+  console.info("Renko Stats " + APP_VERSION);
   const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -55,6 +57,8 @@
       async stores() { return unwrap(await sb.from("stores").select("*").order("name")); },
       async stats(id, from, to) { return unwrap(await sb.rpc("get_stats", { p_store: id, p_from: from, p_to: to })); },
       async calendar(id, month) { return unwrap(await sb.rpc("get_calendar", { p_store: id, p_month: month })); },
+      async documents(id, from, to, kind, search) { return unwrap(await sb.rpc("get_documents", { p_store: id, p_from: from, p_to: to, p_kind: kind, p_search: search || null })); },
+      async documentDetail(id, nmov, day) { return unwrap(await sb.rpc("get_document_detail", { p_store: id, p_nmov: nmov, p_day: day })); },
       async devices() { return unwrap(await sb.rpc("get_devices_status")); },
       async syncLog(id) { return unwrap(await sb.from("sync_log").select("*").eq("store_id", id).order("at", { ascending: false }).limit(40)); },
       async emailLog(id) { await sb.rpc("report_refresh_status").catch(() => null); return unwrap(await sb.from("email_log").select("*").eq("store_id", id).order("created_at", { ascending: false }).limit(60)); },
@@ -105,6 +109,8 @@
         return best;
       },
       async calendar(id, month) { await load(); return data.calendar[month.slice(0, 7)] ?? []; },
+      async documents(id, f, t, kind) { await load(); return (data.documents || {})[kind] || { n: 0, totale: 0, rows: [] }; },
+      async documentDetail() { return { header: {}, lines: [], payments: [] }; },
       async devices() {
         return [{ device_id: "d1", store_id: "demo", store_name: demoStore.name, name: "Tablet cassa", enabled: true, last_seen: new Date(Date.now() - 120000).toISOString(),
           last_sync_at: new Date(Date.now() - 420000).toISOString(), last_error: null, app_version: "1.0.0", db_path: "Venduto.db + Anagra.db",
@@ -341,7 +347,10 @@
           ${line("di cui non fiscale", eur(k.non_fiscale))}
           ${line("Incassato da pagamenti", eur(k.incassato))}
           ${line("Righe eliminate", `${num(k.eliminati_n)} · ${eur(k.eliminati_importo)}`)}
-        </tbody></table>`)}
+          <tr><td colspan="2" style="padding-top:14px;font-weight:700">Documenti emessi</td></tr>
+          ${line("Documenti commerciali", `${num(sv.doc_comm_n)} · ${eur(sv.doc_comm_totale)}`)}
+          ${line("Fatture", `${num(sv.fatture_n)} · ${eur(sv.fatture_totale)}`)}
+        </tbody></table><div class="muted" style="font-size:11px;margin-top:6px">Le fatture sono comprese nelle vendite e in tutte le statistiche. <a href="#" data-go="documents">Vedi documenti →</a></div>`)}
         ${card("IVA per aliquota", "Sulle vendite fiscali", `<table class="data"><thead><tr><th>Aliquota</th><th class="r">Imponibile</th><th class="r">Imposta</th><th class="r">Totale</th></tr></thead><tbody>
           ${st.iva.map((i) => `<tr><td>${num(i.aliquota, 2)}%</td><td class="r">${eur(i.imponibile)}</td><td class="r">${eur(i.imposta)}</td><td class="r">${eur(i.totale)}</td></tr>`).join("")}
           </tbody><tfoot><tr><td>Totale</td><td class="r">${eur(ivaTot.imp)}</td><td class="r">${eur(ivaTot.iva)}</td><td class="r">${eur(ivaTot.tot)}</td></tr></tfoot></table>`)}
@@ -363,6 +372,75 @@
       </div>`;
     return { html };
   };
+
+  views.documents = async () => {
+    const kind = S.docKind || "sc";
+    const data = await api.documents(S.storeId, S.from, S.to, kind, S.docSearch || "");
+    const rows = data.rows || [];
+    const isFt = kind === "ft";
+    S.docRows = rows;
+    const head = isFt
+      ? `<th>Data</th><th class="r">N.</th><th>Tipo</th><th>Cliente</th><th>P.IVA / C.F.</th><th>Comune</th><th>Pagamento</th><th class="r">Totale</th>`
+      : `<th>Data e ora</th><th class="r">N. doc.</th><th class="r">Chiusura</th><th>Operatore</th><th class="r">Tavolo</th><th>Pagamento</th><th class="r">Totale</th>`;
+    const tipo = (t) => ({ TD01: "Fattura", TD04: "Nota di credito", TD24: "Fattura differita", TD02: "Acconto" }[t] || t || "");
+    const body = rows.map((r, i) => isFt
+      ? `<tr class="doc-row" data-i="${i}"><td>${parseD(r.dkey).toLocaleDateString("it-IT")}</td><td class="r">${r.numero}${r.sezionale ? "/" + esc(r.sezionale) : ""}</td><td>${tipo(r.tipo_doc)}</td>
+          <td><b>${esc(r.cliente || "—")}</b></td><td class="muted">${esc(r.piva || r.cf || "")}</td><td class="muted">${esc([r.comune, r.provincia ? "(" + r.provincia.toUpperCase() + ")" : ""].filter(Boolean).join(" "))}</td>
+          <td class="muted">${esc(r.pagamenti || "")}</td><td class="r">${r.totale == null ? '<span class="muted">—</span>' : eur(r.totale)}</td></tr>`
+      : `<tr class="doc-row" data-i="${i}"><td>${fmtTs(r.datam)}</td><td class="r">${r.n_doc ?? ""}</td><td class="r muted">${r.n_chiusura ?? ""}</td><td class="muted">${esc(r.opdes || "")}</td>
+          <td class="r muted">${r.tavolo || ""}</td><td class="muted">${esc(r.pagamenti || "")}${r.flg_nf ? ' <span class="pill warn">non fiscale</span>' : ""}</td><td class="r">${eur(r.totale)}</td></tr>`).join("");
+    const html = `
+      <div class="toolbar" style="margin-bottom:12px">
+        <div class="seg" id="docKind"><button data-k="sc" class="${!isFt ? "active" : ""}">Documenti commerciali</button><button data-k="ft" class="${isFt ? "active" : ""}">Fatture</button></div>
+        <input class="search" id="docSearch" type="text" placeholder="${isFt ? "Cerca cliente, P.IVA, numero…" : "Cerca n. documento, importo…"}" value="${esc(S.docSearch || "")}">
+        <button class="btn small" id="docXls">⬇ Excel elenco</button>
+        <span class="range-label">${num(data.n)} documenti · ${eur(data.totale)}</span>
+      </div>
+      ${card(isFt ? "Fatture" : "Documenti commerciali", (data.n > rows.length ? `Mostrati i ${rows.length} più recenti su ${num(data.n)}: restringi il periodo o usa la ricerca. ` : "") + "Clicca un documento per vedere righe e pagamenti." + (isFt ? " Le fatture senza importo sono precedenti allo storico vendite importato." : ""),
+        rows.length ? `<div class="table-wrap" style="max-height:640px;overflow:auto"><table class="data"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` : empty("Nessun documento nel periodo"))}`;
+    return { html, after() {
+      $$("#docKind button").forEach((b) => b.onclick = () => { S.docKind = b.dataset.k; render(); });
+      let t; $("#docSearch").oninput = (e) => { clearTimeout(t); t = setTimeout(() => { S.docSearch = e.target.value; render().then(() => { const el = $("#docSearch"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }); }, 400); };
+      $$(".doc-row").forEach((tr) => tr.onclick = () => showDocument(rows[+tr.dataset.i], isFt));
+      $("#docXls").onclick = async () => {
+        toast("Preparo il file Excel…");
+        try {
+          await loadScript(LIBS.xlsx);
+          const X = window.XLSX;
+          const aoa = isFt
+            ? [["Data", "Numero", "Sezionale", "Tipo", "Cliente", "P.IVA", "Codice fiscale", "Indirizzo", "CAP", "Comune", "Prov.", "Pagamento", "Totale"],
+               ...rows.map((r) => [String(r.datam).slice(0, 10), r.numero, r.sezionale, tipo(r.tipo_doc), r.cliente, r.piva, r.cf, r.indirizzo, r.cap, r.comune, r.provincia, r.pagamenti, r.totale == null ? null : round2(r.totale)])]
+            : [["Data", "Ora", "N. documento", "N. chiusura", "Matricola", "Operatore", "Tavolo", "Pagamento", "Non fiscale", "Totale"],
+               ...rows.map((r) => [String(r.datam).slice(0, 10), String(r.datam).slice(11, 16), r.n_doc, r.n_chiusura, r.matricola, r.opdes, r.tavolo, r.pagamenti, r.flg_nf ? "sì" : "", round2(r.totale)])];
+          const ws = X.utils.aoa_to_sheet(aoa); const wb = X.utils.book_new();
+          X.utils.book_append_sheet(wb, ws, isFt ? "Fatture" : "Documenti commerciali");
+          X.writeFile(wb, `${fileBase()}_${isFt ? "fatture" : "documenti"}.xlsx`);
+        } catch (e) { toast(e.message); }
+      };
+    } };
+  };
+
+  async function showDocument(r, isFt) {
+    if (!r.nmov) {
+      openDialog(`Fattura ${r.numero}${r.sezionale ? "/" + r.sezionale : ""}`, `<p><b>${esc(r.cliente)}</b><br>${esc(r.indirizzo || "")} ${esc(r.cap || "")} ${esc(r.comune || "")} ${esc(r.provincia || "")}<br>P.IVA ${esc(r.piva || "")} ${r.cf ? "· C.F. " + esc(r.cf) : ""}</p><p class="muted">Fattura precedente allo storico vendite importato: righe e importo non disponibili.</p>`);
+      return;
+    }
+    try {
+      const d = await api.documentDetail(S.storeId, r.nmov, String(r.dkey).slice(0, 10));
+      const h = d.header || {}, inv = d.invoice;
+      const tot = (d.lines || []).reduce((a, l) => a + Number(l.importo), 0);
+      openDialog(isFt ? `Fattura ${r.numero}${r.sezionale ? "/" + r.sezionale : ""} del ${fmtDay(r.dkey, { day: "numeric", month: "long", year: "numeric" })}` : `Documento commerciale n. ${h.n_doc ?? "—"} · ${fmtTs(h.datam)}`, `
+        ${inv ? `<div class="card" style="margin-bottom:12px"><b>${esc(inv.denominazione || ((inv.nome || "") + " " + (inv.cognome || "")))}</b><br>
+          <span class="muted">${esc(inv.indirizzo || "")} · ${esc(inv.cap || "")} ${esc(inv.comune || "")} ${inv.provincia ? "(" + esc(inv.provincia.toUpperCase()) + ")" : ""}<br>
+          P.IVA ${esc(inv.cod_cli || "—")}${inv.cf_cli ? " · C.F. " + esc(inv.cf_cli) : ""} · ${esc(inv.tipo_doc || "")} · pagamento ${esc(inv.tipo_pagamento || "")}</span></div>` : ""}
+        <dl class="kv" style="margin-bottom:12px"><dt>Movimento</dt><dd>${h.nmov}</dd><dt>Operatore</dt><dd>${esc(h.opdes || "")}</dd>
+          ${h.tavolo ? `<dt>Tavolo</dt><dd>${h.tavolo}</dd>` : ""}${h.n_chiusura ? `<dt>Chiusura</dt><dd>${h.n_chiusura}</dd>` : ""}${h.matricola ? `<dt>Matricola RT</dt><dd>${esc(h.matricola)}</dd>` : ""}</dl>
+        <table class="data"><thead><tr><th>Articolo</th><th>Reparto</th><th class="r">Q.tà</th><th class="r">Prezzo</th><th class="r">IVA</th><th class="r">Importo</th></tr></thead><tbody>
+        ${(d.lines || []).map((l) => `<tr><td>${esc(l.descrizione)}</td><td class="muted">${esc(l.reparto)}</td><td class="r">${num(l.qta, 3)}</td><td class="r">${eur(l.prezzo)}</td><td class="r">${num(l.aliquota)}%</td><td class="r">${eur(l.importo)}</td></tr>`).join("")}
+        </tbody><tfoot><tr><td colspan="5">Totale</td><td class="r">${eur(tot)}</td></tr></tfoot></table>
+        <div style="margin-top:12px"><b>Pagamenti:</b> ${(d.payments || []).map((p) => `${esc(p.descrizione)} ${eur(p.importo)}`).join(" · ") || "—"}</div>`);
+    } catch (e) { toast(e.message); }
+  }
 
   views.hours = (st) => {
     const cut = st.range?.cutoff_hour ?? 0;
@@ -657,7 +735,7 @@
   }
 
   async function exportExcel() {
-    const btn = $("#xlsBtn"); btn.disabled = true;
+    const btn = $("#xlsBtn"); btn.disabled = true; toast("Preparo il file Excel…");
     try {
       const [st] = await Promise.all([statsForExport(), loadScript(LIBS.xlsx)]);
       const X = window.XLSX, sec = exportSections(st), wb = X.utils.book_new();
@@ -687,7 +765,7 @@
   }
 
   async function exportPdf() {
-    const btn = $("#pdfBtn"); btn.disabled = true;
+    const btn = $("#pdfBtn"); btn.disabled = true; toast("Preparo il PDF…");
     try {
       const st = await statsForExport();
       await loadScript(LIBS.jspdf); await loadScript(LIBS.autotable);
@@ -751,7 +829,7 @@
     $$("#presets button").forEach((b) => b.classList.toggle("active", b.dataset.p === S.preset));
     $("#dFrom").value = S.from; $("#dTo").value = S.to;
     $("#rangeLabel").textContent = rangeText();
-    $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && S.tab !== "monitor");
+    $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && !["monitor", "documents"].includes(S.tab));
     $("#exportBtns").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab));
     if (!S.storeId) { view.innerHTML = S.isAdmin ? "" : empty("Nessun negozio associato al tuo account. Contatta l'amministratore."); if (!S.isAdmin) return; S.tab = "admin"; }
     view.classList.add("loading");
@@ -851,6 +929,7 @@
     const th = store.get("theme", null);
     if (th) document.documentElement.dataset.theme = th;
     bindUi();
+    $("#appVersion").textContent = "Renko Stats v" + APP_VERSION;
     if (DEMO) $("#demoBanner").classList.remove("hidden");
 
     // Link di reset password / invito: chiede la nuova password
