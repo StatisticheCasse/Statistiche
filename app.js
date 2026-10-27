@@ -3,7 +3,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.8.1";
+  const APP_VERSION = "1.8.2";
   const CFG = window.RENKO_CONFIG || {};
   console.info("Renko Stats " + APP_VERSION);
   const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
@@ -1353,6 +1353,17 @@
     if (user) return startApp(user);
 
     $("#login").classList.remove("hidden");
+    // Invio sull'email passa alla password; occhio per mostrarla (utile su touch e tastiere vecchie)
+    if ($("#email") && $("#password")) {
+      $("#email").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !$("#password").value) { e.preventDefault(); $("#password").focus(); }
+      });
+      $("#password").closest(".field")?.addEventListener("click", (e) => { if (e.target.id !== "pwEye") $("#password").focus(); });
+    }
+    on("#pwEye", "onclick", () => {
+      const p = $("#password"), show = p.type === "password";
+      p.type = show ? "text" : "password"; $("#pwEye").classList.toggle("on", show); p.focus();
+    });
     if ($("#loginForm")) $("#loginForm").onsubmit = async (e) => {
       e.preventDefault();
       $("#loginError").textContent = "";
