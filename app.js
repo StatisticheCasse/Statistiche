@@ -3,7 +3,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.7.0";
+  const APP_VERSION = "1.8.0";
   const CFG = window.RENKO_CONFIG || {};
   console.info("Renko Stats " + APP_VERSION);
   const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
@@ -73,6 +73,8 @@
         return { result: unwrap(await sb.rpc("report_send", { p_store: b.store_id, p_day: b.day, p_test: b.mode === "test" })) };
       },
       async adminIngest(store, p) { return unwrap(await sb.rpc("admin_ingest", { p_store: store, p })); },
+      async printEnqueue(store, device, title, payload) { return unwrap(await sb.rpc("print_enqueue", { p_store: store, p_device: device, p_title: title, p_payload: payload })); },
+      async printStatus(id) { return unwrap(await sb.from("print_jobs").select("status,error,printed_at").eq("id", id).maybeSingle()); },
       async admin(b) {
         switch (b.action) {
           case "list_members": return { members: unwrap(await sb.rpc("admin_list_members", { p_store: b.store_id })) };
@@ -117,11 +119,13 @@
       async devices() {
         return [{ device_id: "d1", store_id: "demo", store_name: demoStore.name, name: "Tablet cassa", enabled: true, last_seen: new Date(Date.now() - 120000).toISOString(),
           last_sync_at: new Date(Date.now() - 420000).toISOString(), last_error: null, app_version: "1.0.0", db_path: "Venduto.db + Anagra.db",
-          info: { cursors: { lines: 22010, receipts: 4240, payments: 3240, deleted: 168 }, sample_datam: "2026-10-22 23:41:02 (text)", android: "Lenovo TB-X606F · Android 10", interval_min: 5 }, minutes_ago: 2, offline: false }];
+          info: { cursors: { lines: 22010, receipts: 4240, payments: 3240, deleted: 168 }, sample_datam: "2026-10-22 23:41:02 (text)", android: "Lenovo TB-X606F · Android 10", interval_min: 5, printer: "192.168.1.50:9100 (80 mm)" }, minutes_ago: 2, offline: false }];
       },
       async syncLog() { return Array.from({ length: 8 }, (_, i) => ({ at: new Date(Date.now() - i * 3e5 * 7).toISOString(), ok: i !== 5, counts: { lines: 40 - i * 3, receipts: 6, payments: 6, deleted: 0 }, error: i === 5 ? "rete: timeout" : null })); },
       async emailLog() { return Array.from({ length: 6 }, (_, i) => ({ created_at: addDays(new Date(), -i).toISOString(), day: iso(addDays(new Date(), -i - 1)), kind: "daily", status: i === 3 ? "error" : "sent", recipients: ["titolare@example.com"], subject: "Riepilogo", error: i === 3 ? "Resend 422: dominio non verificato" : null })); },
       async saveSettings() {}, async report() { return { ok: true, html: "<p style='font-family:sans-serif;padding:20px'>Anteprima disponibile con il backend collegato.</p>", result: { status: "sent" } }; },
+      async printEnqueue(s, d, t, p) { window.__print = p; return 1; },
+      async printStatus() { return { status: "done" }; },
       async adminIngest(store, p) { (window.__ingest ||= []).push(p); await new Promise((r) => setTimeout(r, 5)); return {}; },
       async admin(b) { return b.action === "list_members" ? { members: [{ user_id: "u1", email: "titolare@example.com", role: "owner" }] } : { activation_code: "RS1.eyJ1IjoiaHR0cHM6Ly9kZW1vIiwiayI6ImRlbW8iLCJzIjoiZGVtbyJ9" }; },
       async upsertStore(s) { return { ...demoStore, ...s }; }, async deleteStore() {}, async updateDevice() {}, async deleteDevice() {},
@@ -250,6 +254,13 @@
           ${st.payments.map((p) => `<tr><td>${esc(p.descrizione)}</td><td class="r">${num(p.n)}</td><td class="r">${eur(p.importo)}</td><td class="r">${pct((p.importo / payTot) * 100)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">Nessun pagamento registrato</td></tr>`}
           </tbody></table></div>`, `<button class="btn small" data-go="payments">Dettaglio →</button>`)}
       </div>`;
+    S.exportSpec = () => ({ title: "Panoramica", file: "panoramica", kpi: [["Incasso netto", k.netto, "eur"], ["Scontrini", k.scontrini, "n"], ["Scontrino medio", k.scontrino_medio, "eur"], ["Coperti", Number(k.coperti), "n"], ["Medio a coperto", k.medio_coperto, "eur"], ["Pezzi venduti", Number(k.pezzi), "n"], ["Incasso periodo precedente", k.prev_netto, "eur"]],
+      sections: [
+        single ? { name: "Incasso per ora", cols: ["Ora", "Scontrini", "Incasso"], eur: [2], rows: trimHours(sortedHours(st)).map((h) => [`${hh(h.ora)}:00`, h.scontrini, h.netto]) }
+               : { name: "Incasso per giorno", cols: ["Giorno", "Scontrini", "Coperti", "Incasso"], eur: [3], print: [0, 1, 3], rows: st.daily.map((d) => [parseD(d.day).toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit" }), d.scontrini, Number(d.coperti) || 0, d.netto]) },
+        { name: "Prodotti più venduti", cols: ["Prodotto", "Quantità", "Incasso"], eur: [2], rows: st.products.filter((p) => p.codint !== "888888").slice(0, 20).map((p) => [p.descrizione, Number(p.qta), p.netto]) },
+        { name: "Pagamenti", cols: ["Tipo", "N.", "Importo", "%"], eur: [2], pct: [3], print: [0, 2], rows: st.payments.map((p) => [p.descrizione, p.n, p.importo, (p.importo / payTot) * 100]) },
+      ] });
     return { html, after() {
       if (single) {
         const h = trimHours(sortedHours(st));
@@ -284,6 +295,7 @@
       const { k, d } = S.prodSort;
       rows.sort((a, b) => (typeof a[k] === "string" ? a[k].localeCompare(b[k]) : (a[k] || 0) - (b[k] || 0)) * d);
       const tot = rows.reduce((a, p) => a + p.netto, 0) || 1;
+      S.prodView = { rows, tot };
       const max = Math.max(1, ...rows.map((p) => p.netto));
       const th = (key, label, r = true) => `<th class="sortable ${r ? "r" : ""}" data-sort="${key}">${label}${k === key ? (d > 0 ? " ↑" : " ↓") : ""}</th>`;
       $("#prodTable").innerHTML = `<div class="table-wrap" style="max-height:640px;overflow:auto"><table class="data"><thead><tr>${th("descrizione", "Prodotto", false)}<th>Reparto</th>${th("qta", "Q.tà")}${th("var", "Var. q.tà")}${th("netto", "Incasso")}<th class="r">%</th><th></th></tr></thead><tbody>
@@ -301,6 +313,17 @@
       });
     };
     st.products.forEach((p) => p.var = p.prev_qta ? (p.qta - p.prev_qta) / p.prev_qta : 999);
+    S.prodView = null;
+    S.exportSpec = () => {
+      const pv = S.prodView || { rows: st.products, tot: totRep };
+      const filt = [S.prodSearch && `ricerca "${S.prodSearch}"`, S.prodRep && `reparto ${repName[S.prodRep] ?? S.prodRep}`].filter(Boolean).join(", ");
+      return { title: "Prodotti" + (filt ? ` (${filt})` : ""), file: "prodotti",
+        sections: [
+          !S.prodRep && !S.prodSearch ? { name: "Reparti", cols: ["Reparto", "Quantità", "Incasso", "%"], eur: [2], pct: [3], print: [0, 2], rows: reps.map((r) => [r.descrizione, Number(r.qta), r.netto, (r.netto / totRep) * 100]) } : null,
+          { name: "Prodotti venduti", cols: ["Codice", "Prodotto", "Reparto", "Quantità", "Q.tà periodo prec.", "Incasso", "%"], eur: [5], pct: [6], print: [1, 3, 5], printMax: 80,
+            rows: pv.rows.map((p) => [p.codint, p.descrizione, repName[p.reparto] ?? p.reparto, Number(p.qta), Number(p.prev_qta) || 0, p.netto, (p.netto / (pv.tot || 1)) * 100]) },
+        ] };
+    };
     return { html, after() {
       const top = reps.slice(0, 14);
       barChart($("#cRep"), top.map((r) => r.descrizione), top.map((r) => r.netto), { horizontal: true, extra: (i) => `${num(top[i].qta)} pz` });
@@ -330,6 +353,10 @@
           ${pays.map((p) => `<tr><td>${esc(p.descrizione)}</td><td class="r">${num(p.n)}</td><td class="r">${eur(p.importo)}</td><td class="r">${pct(tot ? (p.importo / tot) * 100 : 0)}</td><td class="r">${eur(p.n ? p.importo / p.n : 0)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nessun pagamento</td></tr>`}
           </tbody><tfoot><tr><td>Totale</td><td class="r">${num(pays.reduce((a, p) => a + p.n, 0))}</td><td class="r">${eur(tot)}</td><td></td><td></td></tr></tfoot></table></div>`)}
       </div>`;
+    S.exportSpec = () => ({ title: "Pagamenti", file: "pagamenti",
+      kpi: [["Incassato (pagamenti)", tot, "eur"], ["Vendite nette", k.netto, "eur"], ["Differenza", diff, "eur"], ["Transazioni", pays.reduce((a, p) => a + p.n, 0), "n"]],
+      sections: [{ name: "Pagamenti", cols: ["Tipo", "Transazioni", "Importo", "%", "Medio"], eur: [2, 4], pct: [3], print: [0, 1, 2], boldLast: true,
+        rows: [...pays.map((p) => [p.descrizione, p.n, p.importo, tot ? (p.importo / tot) * 100 : 0, p.n ? p.importo / p.n : 0]), ["Totale", pays.reduce((a, p) => a + p.n, 0), tot, 100, null]] }] });
     return { html, after() { if (pays.length) barChart($("#cPay"), pays.map((p) => p.descrizione), pays.map((p) => p.importo), { horizontal: true, extra: (i) => `${pays[i].n} transazioni` }); } };
   };
 
@@ -372,6 +399,17 @@
         ${card("Articoli eliminati", "Righe cancellate dagli ordini", `<div class="table-wrap"><table class="data"><thead><tr><th>Articolo</th><th class="r">Q.tà</th><th class="r">Importo</th></tr></thead><tbody>
           ${st.deleted.map((d) => `<tr><td>${esc(d.descrizione)}</td><td class="r">${num(d.qta, 1)}</td><td class="r">${eur(d.importo)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Nessuna eliminazione</td></tr>`}</tbody></table></div>`)}
       </div>`;
+    S.exportSpec = () => ({ title: "Finanziario", file: "finanziario",
+      sections: [
+        { name: "Riepilogo finanziario", cols: ["Voce", "Importo"], eur: [1], rows: [["Vendite lorde", k.lordo], ["Sconti", k.sconti], ["Abbuoni (inclusi nel netto)", k.abbuoni], ["Vendite nette", k.netto], ["di cui non fiscale", k.non_fiscale], ["Incassato da pagamenti", k.incassato], ["Importo righe eliminate", k.eliminati_importo]] },
+        { name: "Documenti emessi", cols: ["Tipo", "Numero", "Totale"], eur: [2], print: [0, 1, 2], rows: [["Documenti commerciali", sv.doc_comm_n || 0, sv.doc_comm_totale || 0], ["Fatture", sv.fatture_n || 0, sv.fatture_totale || 0]] },
+        { name: "IVA per aliquota", cols: ["Aliquota %", "Imponibile", "Imposta", "Totale"], eur: [1, 2, 3], print: [0, 2, 3], boldLast: true,
+          rows: [...st.iva.map((i) => [Number(i.aliquota), i.imponibile, i.imposta, i.totale]), ["Totale", ivaTot.imp, ivaTot.iva, ivaTot.tot]] },
+        { name: "Servizio", cols: ["Voce", "Valore"], rows: [["Scontrini", k.scontrini], ["Coperti", Number(k.coperti)], ["Tavoli serviti", sv.tavoli_n || 0], ["Asporto", sv.asporto_n || 0], ["Scontrino medio", eur(k.scontrino_medio)], ["Medio a coperto", eur(k.medio_coperto)]] },
+        { name: "Operatori", cols: ["Operatore", "Scontrini", "Incasso"], eur: [2], print: [0, 1, 2], rows: st.operators.map((o) => [o.descrizione, o.scontrini, o.netto]) },
+        { name: "Camerieri", cols: ["Cameriere", "Scontrini", "Incasso"], eur: [2], print: [0, 1, 2], rows: st.waiters.map((o) => [o.descrizione, o.scontrini, o.netto]) },
+        { name: "Articoli eliminati", cols: ["Articolo", "Quantità", "Importo"], eur: [2], rows: st.deleted.map((d) => [d.descrizione, Number(d.qta), d.importo]) },
+      ] });
     return { html };
   };
 
@@ -381,6 +419,13 @@
     const rows = data.rows || [];
     const isFt = kind === "ft";
     S.docRows = rows;
+    S.exportSpec = () => isFt
+      ? { title: "Fatture" + (S.docSearch ? ` (ricerca "${S.docSearch}")` : ""), file: "fatture", kpi: [["Fatture", data.n, "n"], ["Totale", data.totale, "eur"]],
+          sections: [{ name: "Fatture", cols: ["Data", "Numero", "Tipo", "Cliente", "P.IVA", "Codice fiscale", "Comune", "Pagamento", "Totale"], eur: [8], print: [1, 3, 8],
+            rows: rows.map((r) => [parseD(r.dkey).toLocaleDateString("it-IT"), `${r.numero}${r.sezionale ? "/" + r.sezionale : ""}`, tipo(r.tipo_doc), r.cliente, r.piva, r.cf, r.comune, r.pagamenti, r.totale]) }] }
+      : { title: "Documenti commerciali" + (S.docSearch ? ` (ricerca "${S.docSearch}")` : ""), file: "documenti", kpi: [["Documenti", data.n, "n"], ["Totale", data.totale, "eur"]],
+          sections: [{ name: "Documenti commerciali", cols: ["Data", "Ora", "N. documento", "N. chiusura", "Operatore", "Tavolo", "Pagamento", "Totale"], eur: [7], print: [1, 2, 7], printMax: 150,
+            rows: rows.map((r) => [String(r.datam).slice(0, 10).split("-").reverse().join("/"), String(r.datam).slice(11, 16), r.n_doc, r.n_chiusura, r.opdes, r.tavolo || "", r.pagamenti, r.totale]) }] };
     const head = isFt
       ? `<th>Data</th><th class="r">N.</th><th>Tipo</th><th>Cliente</th><th>P.IVA / C.F.</th><th>Comune</th><th>Pagamento</th><th class="r">Totale</th>`
       : `<th>Data e ora</th><th class="r">N. doc.</th><th class="r">Chiusura</th><th>Operatore</th><th class="r">Tavolo</th><th>Pagamento</th><th class="r">Totale</th>`;
@@ -395,7 +440,6 @@
       <div class="toolbar" style="margin-bottom:12px">
         <div class="seg" id="docKind"><button data-k="sc" class="${!isFt ? "active" : ""}">Documenti commerciali</button><button data-k="ft" class="${isFt ? "active" : ""}">Fatture</button></div>
         <input class="search" id="docSearch" type="text" placeholder="${isFt ? "Cerca cliente, P.IVA, numero…" : "Cerca n. documento, importo…"}" value="${esc(S.docSearch || "")}">
-        <button class="btn small" id="docXls">⬇ Excel elenco</button>
         <span class="range-label">${num(data.n)} documenti · ${eur(data.totale)}</span>
       </div>
       ${card(isFt ? "Fatture" : "Documenti commerciali", (data.n > rows.length ? `Mostrati i ${rows.length} più recenti su ${num(data.n)}: restringi il periodo o usa la ricerca. ` : "") + "Clicca un documento per vedere righe e pagamenti." + (isFt ? " Le fatture senza importo sono precedenti allo storico vendite importato." : ""),
@@ -404,21 +448,6 @@
       $$("#docKind button").forEach((b) => b.onclick = () => { S.docKind = b.dataset.k; render(); });
       let t; $("#docSearch").oninput = (e) => { clearTimeout(t); t = setTimeout(() => { S.docSearch = e.target.value; render().then(() => { const el = $("#docSearch"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }); }, 400); };
       $$(".doc-row").forEach((tr) => tr.onclick = () => showDocument(rows[+tr.dataset.i], isFt));
-      $("#docXls").onclick = async () => {
-        toast("Preparo il file Excel…");
-        try {
-          await loadScript(LIBS.xlsx);
-          const X = window.XLSX;
-          const aoa = isFt
-            ? [["Data", "Numero", "Sezionale", "Tipo", "Cliente", "P.IVA", "Codice fiscale", "Indirizzo", "CAP", "Comune", "Prov.", "Pagamento", "Totale"],
-               ...rows.map((r) => [String(r.datam).slice(0, 10), r.numero, r.sezionale, tipo(r.tipo_doc), r.cliente, r.piva, r.cf, r.indirizzo, r.cap, r.comune, r.provincia, r.pagamenti, r.totale == null ? null : round2(r.totale)])]
-            : [["Data", "Ora", "N. documento", "N. chiusura", "Matricola", "Operatore", "Tavolo", "Pagamento", "Non fiscale", "Totale"],
-               ...rows.map((r) => [String(r.datam).slice(0, 10), String(r.datam).slice(11, 16), r.n_doc, r.n_chiusura, r.matricola, r.opdes, r.tavolo, r.pagamenti, r.flg_nf ? "sì" : "", round2(r.totale)])];
-          const ws = X.utils.aoa_to_sheet(aoa); const wb = X.utils.book_new();
-          X.utils.book_append_sheet(wb, ws, isFt ? "Fatture" : "Documenti commerciali");
-          writeXlsx(wb, `${fileBase()}_${isFt ? "fatture" : "documenti"}.xlsx`);
-        } catch (e) { toast(e.message); }
-      };
     } };
   };
 
@@ -466,30 +495,18 @@
         ${kpi("Totale fiscale", eur(tot), `<div class="delta flat">IVA ${eur(t.sc.totals.iva + t.ft.totals.iva)}</div>`)}
         ${kpi("Non fiscale (escluso)", eur(t.sc.totals.nf), `<div class="delta flat">non compreso nei totali IVA</div>`)}
       </div>
-      <div style="margin-bottom:12px">${card("Documenti commerciali", "Scontrini per giorno e aliquota, esclusi i non fiscali", table(t.sc, "sc"), `<button class="btn small" id="vatXls">⬇ Excel IVA</button>`)}</div>
+      <div style="margin-bottom:12px">${card("Documenti commerciali", "Scontrini per giorno e aliquota, esclusi i non fiscali", table(t.sc, "sc"))}</div>
       ${card("Fatture", "Fatture per giorno di emissione e aliquota", table(t.ft, "ft"))}
       <div class="muted" style="font-size:11px;margin-top:8px">Imponibile e imposta sono calcolati per scorporo sul totale giornaliero di ogni aliquota: possono differire di qualche centesimo dalla chiusura del registratore, che arrotonda documento per documento.</div>`;
-    return { html, after() {
-      $("#vatXls").onclick = async () => {
-        toast("Preparo il file Excel…");
-        try {
-          await loadScript(LIBS.xlsx);
-          const X = window.XLSX, wb = X.utils.book_new();
-          for (const [tipo, name] of [["sc", "Documenti commerciali"], ["ft", "Fatture"]]) {
-            const x = t[tipo];
-            const head = ["Giorno", "N. documenti", ...x.aliq.flatMap((a) => [`Imponibile ${a}%`, `Imposta ${a}%`]), "Imponibile", "IVA", "Totale", ...(tipo === "sc" ? ["Non fiscale (escluso)"] : [])];
-            const r = (l) => [l.g, l.n, ...l.cells.flatMap((c) => [round2(c.imponibile), round2(c.imposta)]), round2(l.imp), round2(l.iva), round2(l.tot), ...(tipo === "sc" ? [round2(l.nf)] : [])];
-            const ws = X.utils.aoa_to_sheet([head, ...x.lines.map(r), r({ ...x.totals, g: "Totale" })]);
-            ws["!cols"] = head.map((h, i) => ({ wch: i === 0 ? 12 : Math.max(12, h.length + 2) }));
-            for (let ri = 1; ri <= x.lines.length + 1; ri++) for (let ci = 2; ci < head.length; ci++) {
-              const a = X.utils.encode_cell({ r: ri, c: ci }); if (ws[a]) ws[a].z = '#,##0.00 "€"';
-            }
-            X.utils.book_append_sheet(wb, ws, name);
-          }
-          writeXlsx(wb, fileBase() + "_iva.xlsx");
-        } catch (e) { toast(e.message); }
-      };
-    } };
+    const vrow = (l) => [l.g === "Totale" ? "Totale" : parseD(l.g).toLocaleDateString("it-IT"), l.n, ...l.cells.flatMap((c) => [c.imponibile, c.imposta]), l.imp, l.iva, l.tot];
+    const vsec = (x, name, nf) => ({ name, boldLast: true,
+      cols: ["Giorno", "Doc.", ...x.aliq.flatMap((a) => [`Imponibile ${a}%`, `Imposta ${a}%`]), "Imponibile", "IVA", "Totale", ...(nf ? ["Non fiscale (escluso)"] : [])],
+      eur: Array.from({ length: x.aliq.length * 2 + 3 + (nf ? 1 : 0) }, (_, i) => i + 2), print: [0, x.aliq.length * 2 + 3, x.aliq.length * 2 + 4],
+      rows: [...x.lines.map((l) => [...vrow(l), ...(nf ? [l.nf] : [])]), [...vrow({ ...x.totals, g: "Totale" }), ...(nf ? [x.totals.nf] : [])]] });
+    S.exportSpec = () => ({ title: "Riepilogo IVA", file: "iva",
+      kpi: [["Documenti commerciali", t.sc.totals.tot, "eur"], ["IVA documenti commerciali", t.sc.totals.iva, "eur"], ["Fatture", t.ft.totals.tot, "eur"], ["IVA fatture", t.ft.totals.iva, "eur"], ["Non fiscale (escluso)", t.sc.totals.nf, "eur"]],
+      sections: [t.sc.lines.length ? vsec(t.sc, "Documenti commerciali (esclusi non fiscali)", true) : null, t.ft.lines.length ? vsec(t.ft, "Fatture", false) : null] });
+    return { html };
   };
 
   async function showDocument(r, isFt) {
@@ -573,6 +590,14 @@
           ${bands.map((b) => `<tr><td><b>${b.name}</b> <span class="muted">${b.range}</span><div class="muted" style="font-size:11px">${num(b.as)} sc. vs ${num(b.bs)}</div></td><td class="r">${eur(b.an)}</td><td class="r muted">${eur(b.bn)}</td>${diffCell(b.an, b.bn)}</tr>`).join("")}
           </tbody></table>`)}
       </div>`;
+    S.exportSpec = () => ({ title: `Fasce orarie ${dayLbl} vs ${prevLbl}`, file: "fasce_orarie",
+      kpi: [[`Incasso ${dayLbl}`, T.an, "eur"], [`Incasso ${prevLbl}`, T.bn, "eur"], ["Differenza", T.an - T.bn, "eur"], [`Scontrini ${dayLbl}`, T.as, "n"], [`Scontrini ${prevLbl}`, T.bs, "n"]],
+      sections: [
+        { name: "Confronto ora per ora", cols: ["Ora", `Sc. ${dayLbl}`, `Incasso ${dayLbl}`, `Sc. ${prevLbl}`, `Incasso ${prevLbl}`, "Diff. sc.", "Diff. €", "Diff. %"], eur: [2, 4, 6], pct: [7], print: [0, 2, 4, 6], boldLast: true,
+          rows: [...hours.map((h) => [`${hh(h.ora)}-${hh((h.ora + 1) % 24)}`, h.a.scontrini, h.a.netto, h.b.scontrini, h.b.netto, h.a.scontrini - h.b.scontrini, h.a.netto - h.b.netto, h.b.netto ? (h.a.netto - h.b.netto) / h.b.netto * 100 : null]),
+                 ["Totale", T.as, T.an, T.bs, T.bn, T.as - T.bs, T.an - T.bn, T.bn ? (T.an - T.bn) / T.bn * 100 : null]] },
+        { name: "Fasce del giorno", cols: ["Fascia", dayLbl, prevLbl, "Differenza"], eur: [1, 2, 3], print: [0, 1, 3], rows: bands.map((b) => [`${b.name} ${b.range}`, b.an, b.bn, b.an - b.bn]) },
+      ] });
     return { html, after() {
       const accent = css("--accent"), muted = css("--muted"), grid = css("--grid");
       charts.push(new Chart($("#cCmp"), {
@@ -628,6 +653,13 @@
           ${hours.map((h) => `<tr><td>${hh(h.ora)}:00–${hh((h.ora + 1) % 24)}:00</td><td class="r">${num(h.scontrini)}</td><td class="r">${eur(h.netto)}</td><td class="r">${eur(h.scontrini ? h.netto / h.scontrini : 0)}</td></tr>`).join("")}</tbody></table></div>`)}
       </div>
       ${card("Mappa giorno × ora", "Incasso per giorno della settimana e ora", heat)}`;
+    S.exportSpec = () => ({ title: "Fasce orarie", file: "fasce_orarie",
+      sections: [
+        { name: "Fasce del giorno", cols: ["Fascia", "Orario", "Scontrini", "Incasso", "%", "Medio"], eur: [3, 5], pct: [4], print: [0, 2, 3], rows: bands.map((b) => [b.name, b.range, b.n, b.net, (b.net / tot) * 100, b.net / b.n]) },
+        { name: "Dettaglio orario", cols: ["Ora", "Scontrini", "Incasso", "Medio"], eur: [2, 3], print: [0, 1, 2], rows: hours.map((h) => [`${hh(h.ora)}-${hh((h.ora + 1) % 24)}`, h.scontrini, h.netto, h.scontrini ? h.netto / h.scontrini : 0]) },
+        { name: "Giorno x ora", cols: ["Giorno", ...cols.map((h) => hh(h))], eur: cols.map((_, i) => i + 1), print: [0],
+          rows: [1, 2, 3, 4, 5, 6, 7].map((d) => [DOW[d], ...cols.map((h) => cells[`${d}_${h}`]?.netto ?? null)]) },
+      ] });
     return { html, after() {
       barChart($("#cH1"), hours.map((h) => hh(h.ora)), hours.map((h) => h.netto), { extra: (i) => `${hours[i].scontrini} scontrini` });
       barChart($("#cH2"), hours.map((h) => hh(h.ora)), hours.map((h) => h.scontrini), { fmt: (v) => num(v) + " scontrini", tick: num });
@@ -653,10 +685,15 @@
       cells += `<div class="day ${key === today ? "today" : ""}" data-day="${key}" style="${x ? `background:color-mix(in srgb, var(--accent) ${a}%, var(--surface))` : ""}">
         <span class="n">${d}</span>${x ? `<span><div class="v">${eur0(x.netto)}</div><div class="s">${x.scontrini} sc.</div></span>` : `<span class="s muted">—</span>`}</div>`;
     }
-    const html = card(`<div class="cal-head"><button class="btn small" id="calPrev">‹</button><span class="title">${m.toLocaleDateString("it-IT", { month: "long", year: "numeric" })}</span><button class="btn small" id="calNext">›</button></div>`,
+    const html = card(`<div class="cal-head"><button class="btn small" id="calPrev">‹</button><span class="title">${m.toLocaleDateString("it-IT", { month: "long", year: "numeric" })}</span><button class="btn small" id="calNext">›</button>
+        <span style="flex:1"></span><button class="btn small" id="calXls">⬇ Excel</button><button class="btn small" id="calPdf">⬇ PDF</button><button class="btn small" id="calPrn">🖨 Stampa</button></div>`,
       `Totale mese: <b>${eur(tot)}</b> · ${num(nsc)} scontrini · ${data.length} giorni con vendite · media ${eur(data.length ? tot / data.length : 0)}/giorno — clicca un giorno per il dettaglio`,
       `<div class="cal">${["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"].map((d) => `<div class="wd">${d}</div>`).join("")}${cells}</div>`);
+    S.exportSpec = () => ({ title: "Calendario " + m.toLocaleDateString("it-IT", { month: "long", year: "numeric" }), file: "calendario",
+      kpi: [["Totale mese", tot, "eur"], ["Scontrini", nsc, "n"], ["Giorni con vendite", data.length, "n"], ["Media giornaliera", data.length ? tot / data.length : 0, "eur"]],
+      sections: [{ name: "Giorni", cols: ["Giorno", "Scontrini", "Incasso"], eur: [2], rows: data.map((d) => [parseD(d.day).toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit" }), d.scontrini, d.netto]) }] });
     return { html, after() {
+      $("#calXls").onclick = exportExcel; $("#calPdf").onclick = exportPdf; $("#calPrn").onclick = printDialog;
       $("#calPrev").onclick = () => { S.calMonth = iso(new Date(m.getFullYear(), m.getMonth() - 1, 1)); render(); };
       $("#calNext").onclick = () => { S.calMonth = iso(new Date(m.getFullYear(), m.getMonth() + 1, 1)); render(); };
       $$(".cal .day[data-day]").forEach((el) => el.onclick = () => { S.from = S.to = el.dataset.day; S.preset = ""; setTab("overview"); });
@@ -995,129 +1032,149 @@
   }
   const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-  function exportSections(st) {
-    const k = st.kpi;
-    const cut = st.range?.cutoff_hour ?? 0;
-    const repName = Object.fromEntries((st.departments || []).map((r) => [r.reparto, r.descrizione]));
-    const payTot = (st.payments || []).reduce((a, p) => a + p.importo, 0) || 1;
-    const repTot = (st.departments || []).reduce((a, r) => a + r.netto, 0) || 1;
-    const hours = trimHours(sortedHours(st));
-    return {
-      kpi: [
-        ["Incasso netto", round2(k.netto), "eur"], ["Vendite lorde", round2(k.lordo), "eur"], ["Sconti", round2(k.sconti), "eur"],
-        ["Abbuoni", round2(k.abbuoni), "eur"], ["di cui non fiscale", round2(k.non_fiscale), "eur"],
-        ["Incassato (pagamenti)", round2(k.incassato), "eur"], ["Scontrini", k.scontrini, "n"],
-        ["Scontrino medio", round2(k.scontrino_medio), "eur"], ["Coperti", Number(k.coperti), "n"],
-        ["Medio a coperto", round2(k.medio_coperto), "eur"], ["Pezzi venduti", Number(k.pezzi), "n"],
-        ["Righe eliminate", k.eliminati_n, "n"], ["Importo eliminato", round2(k.eliminati_importo), "eur"],
-        ["Incasso periodo precedente", round2(k.prev_netto), "eur"], ["Scontrini periodo precedente", k.prev_scontrini, "n"],
-      ],
-      tables: [
-        { name: "Giornaliero", cols: ["Data", "Giorno", "Scontrini", "Coperti", "Incasso"], eur: [4],
-          rows: (st.daily || []).map((d) => [String(d.day).slice(0, 10), DOW[((parseD(d.day).getDay() + 6) % 7) + 1], d.scontrini, Number(d.coperti) || 0, round2(d.netto)]) },
-        { name: "Fasce orarie", cols: ["Ora", "Scontrini", "Incasso", "Medio"], eur: [2, 3],
-          rows: hours.map((h) => [`${hh(h.ora)}:00-${hh((h.ora + 1) % 24)}:00`, h.scontrini, round2(h.netto), round2(h.scontrini ? h.netto / h.scontrini : 0)]) },
-        { name: "Pagamenti", cols: ["Tipo", "Transazioni", "Importo", "%"], eur: [2],
-          rows: (st.payments || []).map((p) => [p.descrizione, p.n, round2(p.importo), round2((p.importo / payTot) * 100)]) },
-        { name: "Reparti", cols: ["Reparto", "Quantità", "Incasso", "%"], eur: [2],
-          rows: (st.departments || []).map((r) => [r.descrizione, Number(r.qta), round2(r.netto), round2((r.netto / repTot) * 100)]) },
-        { name: "Prodotti", cols: ["Codice", "Prodotto", "Reparto", "Quantità", "Incasso", "Sconti", "Q.tà periodo prec."], eur: [4, 5],
-          rows: (st.products || []).map((p) => [p.codint, p.descrizione, repName[p.reparto] ?? p.reparto, Number(p.qta), round2(p.netto), round2(p.sconti), Number(p.prev_qta) || 0]) },
-        { name: "IVA", cols: ["Aliquota %", "Imponibile", "Imposta", "Totale"], eur: [1, 2, 3],
-          rows: (st.iva || []).map((i) => [Number(i.aliquota), round2(i.imponibile), round2(i.imposta), round2(i.totale)]) },
-        { name: "Operatori", cols: ["Operatore", "Scontrini", "Incasso"], eur: [2],
-          rows: (st.operators || []).map((o) => [o.descrizione, o.scontrini, round2(o.netto)]) },
-        { name: "Camerieri", cols: ["Cameriere", "Scontrini", "Incasso"], eur: [2],
-          rows: (st.waiters || []).map((o) => [o.descrizione, o.scontrini, round2(o.netto)]) },
-        { name: "Eliminati", cols: ["Codice", "Articolo", "Quantità", "Importo"], eur: [3],
-          rows: (st.deleted || []).map((d) => [d.codint, d.descrizione, Number(d.qta), round2(d.importo)]) },
-      ],
-      cut,
-    };
+  // Ogni scheda imposta S.exportSpec = () => ({ title, kpi: [[etichetta, valore, "eur"|"n"|"txt"]], sections: [...] })
+  // sezione: { name, cols: [...], rows: [[...]], eur: [indici colonne in €], pct: [indici %], print: [indici da stampare] }
+  const fmtCell = (v, i, sec) => v == null || v === "" ? "" : sec.eur?.includes(i) ? eur(v) : sec.pct?.includes(i) ? pct(v) : typeof v === "number" ? num(v, 2) : String(v);
+  const fmtKpi = ([, v, t]) => t === "eur" ? eur(v) : t === "txt" ? String(v ?? "") : num(v, 2);
+  function currentSpec() {
+    if (typeof S.exportSpec !== "function") throw new Error("Questa scheda non ha dati da esportare");
+    const sp = S.exportSpec();
+    sp.sections = (sp.sections || []).filter((x) => x && x.rows && x.rows.length);
+    return sp;
   }
 
   async function exportExcel() {
     const btn = $("#xlsBtn"); btn.disabled = true; toast("Preparo il file Excel…");
     try {
-      const [st] = await Promise.all([statsForExport(), loadScript(LIBS.xlsx)]);
-      const X = window.XLSX, sec = exportSections(st), wb = X.utils.book_new();
-      const EUR = '#,##0.00 "€"';
-      const sheet = (aoa, widths, eurCells) => {
-        const ws = X.utils.aoa_to_sheet(aoa);
-        ws["!cols"] = widths.map((w) => ({ wch: w }));
-        eurCells.forEach(([r, c]) => { const a = X.utils.encode_cell({ r, c }); if (ws[a] && typeof ws[a].v === "number") ws[a].z = EUR; });
-        return ws;
-      };
-      const head = [["Renko Stats — " + (cur()?.name || "")], ["Periodo", rangeText()], []];
-      const kAoa = [...head, ["Indicatore", "Valore"], ...sec.kpi.map(([l, v]) => [l, v])];
-      const kEur = sec.kpi.map((x, i) => x[2] === "eur" ? [head.length + 1 + i, 1] : null).filter(Boolean);
-      X.utils.book_append_sheet(wb, sheet(kAoa, [30, 16], kEur), "Riepilogo");
-      for (const t of sec.tables) {
-        if (!t.rows.length) continue;
-        const aoa = [t.cols, ...t.rows];
-        const eurCells = [];
-        t.rows.forEach((_, ri) => t.eur.forEach((c) => eurCells.push([ri + 1, c])));
-        const widths = t.cols.map((c, i) => Math.max(c.length + 2, ...t.rows.slice(0, 300).map((r) => String(r[i] ?? "").length + 2)));
-        const ws = sheet(aoa, widths.map((w) => Math.min(w, 45)), eurCells);
-        ws["!autofilter"] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: t.rows.length, c: t.cols.length - 1 } }) };
-        X.utils.book_append_sheet(wb, ws, t.name);
+      const sp = currentSpec();
+      await loadScript(LIBS.xlsx);
+      const X = window.XLSX, wb = X.utils.book_new(), EUR = '#,##0.00 "€"';
+      const head = [[`Renko Stats — ${cur()?.name || ""} — ${sp.title}`], ["Periodo", rangeText()], []];
+      const used = new Set();
+      const sheetName = (n) => { const b = n.replace(/[\\/?*[\]:]/g, " ").slice(0, 28) || "Foglio"; let x = b, i = 2; while (used.has(x)) x = `${b} ${i++}`; used.add(x); return x; };
+      if (sp.kpi?.length || !sp.sections.length) {
+        const aoa = [...head, ["Indicatore", "Valore"], ...(sp.kpi || []).map(([l, v, t]) => [l, t === "txt" ? String(v ?? "") : Math.round((Number(v) || 0) * 100) / 100])];
+        const ws = X.utils.aoa_to_sheet(aoa); ws["!cols"] = [{ wch: 34 }, { wch: 18 }];
+        (sp.kpi || []).forEach((k, i) => { if (k[2] === "eur") { const c = ws[X.utils.encode_cell({ r: head.length + 1 + i, c: 1 })]; if (c) c.z = EUR; } });
+        X.utils.book_append_sheet(wb, ws, sheetName("Riepilogo"));
       }
-      writeXlsx(wb, fileBase() + ".xlsx");
+      for (const sec of sp.sections) {
+        const rnd = (v, i) => typeof v !== "number" ? (v == null ? "" : v) : sec.eur?.includes(i) || sec.pct?.includes(i) ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000;
+        const ws = X.utils.aoa_to_sheet([sec.cols, ...sec.rows.map((r) => r.map(rnd))]);
+        ws["!cols"] = sec.cols.map((c, i) => ({ wch: Math.min(45, Math.max(String(c).length + 2, ...sec.rows.slice(0, 300).map((r) => String(r[i] ?? "").length + 2))) }));
+        sec.rows.forEach((_, ri) => (sec.eur || []).forEach((ci) => { const c = ws[X.utils.encode_cell({ r: ri + 1, c: ci })]; if (c && typeof c.v === "number") c.z = EUR; }));
+        ws["!autofilter"] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: sec.rows.length, c: sec.cols.length - 1 } }) };
+        X.utils.book_append_sheet(wb, ws, sheetName(sec.name));
+      }
+      writeXlsx(wb, `${fileBase()}_${sp.file || S.tab}.xlsx`);
     } catch (e) { toast(e.message); } finally { btn.disabled = false; }
   }
 
   async function exportPdf() {
     const btn = $("#pdfBtn"); btn.disabled = true; toast("Preparo il PDF…");
     try {
-      const st = await statsForExport();
+      const sp = currentSpec();
       await loadScript(LIBS.jspdf); await loadScript(LIBS.autotable);
-      const { jsPDF } = window.jspdf;
-      const doc = new jsPDF({ unit: "mm", format: "a4" });
-      const sec = exportSections(st);
-      const W = doc.internal.pageSize.getWidth();
+      const wide = sp.sections.some((x) => x.cols.length > 7);
+      const doc = new window.jspdf.jsPDF({ unit: "mm", format: "a4", orientation: wide ? "landscape" : "portrait" });
+      const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
       const teal = [15, 118, 110], muted = [100, 116, 139];
-      const fmt = (v, kind) => kind === "eur" ? eur(v) : num(v, 2);
-      // intestazione
       doc.setFillColor(...teal); doc.rect(0, 0, W, 28, "F");
-      doc.setTextColor(255, 255, 255); doc.setFontSize(9); doc.text("RIEPILOGO STATISTICHE", 14, 10);
+      doc.setTextColor(255, 255, 255); doc.setFontSize(9); doc.text(sp.title.toUpperCase(), 14, 10);
       doc.setFontSize(18); doc.setFont(undefined, "bold"); doc.text(cur()?.name || "", 14, 18);
       doc.setFontSize(10); doc.setFont(undefined, "normal"); doc.text(rangeText(), 14, 24);
       doc.setTextColor(15, 23, 42);
-      // KPI in due colonne
-      const kp = sec.kpi.map(([l, v, t]) => [l, fmt(v, t)]);
-      const half = Math.ceil(kp.length / 2);
-      const kRows = kp.slice(0, half).map((r, i) => [...r, ...(kp[half + i] || ["", ""])]);
       const base = { theme: "grid", styles: { fontSize: 8.5, cellPadding: 1.6, lineColor: [226, 232, 240], lineWidth: 0.1 },
         headStyles: { fillColor: teal, textColor: 255, fontStyle: "bold" }, margin: { left: 14, right: 14 } };
-      doc.autoTable({ ...base, startY: 34, body: kRows, theme: "plain",
-        columnStyles: { 0: { textColor: muted }, 1: { fontStyle: "bold", halign: "right" }, 2: { textColor: muted }, 3: { fontStyle: "bold", halign: "right" } } });
-      const section = (title, t, limit) => {
-        if (!t.rows.length) return;
-        let y = doc.lastAutoTable.finalY + 8;
-        if (y > 260) { doc.addPage(); y = 18; }
-        doc.setFontSize(11); doc.setFont(undefined, "bold"); doc.text(title, 14, y); doc.setFont(undefined, "normal");
-        const rows = (limit ? t.rows.slice(0, limit) : t.rows).map((r) => r.map((v, i) => t.eur.includes(i) ? eur(v) : typeof v === "number" ? num(v, 2) : String(v ?? "")));
-        const colStyles = {}; t.cols.forEach((_, i) => { if (i > 0 && typeof t.rows[0][i] === "number") colStyles[i] = { halign: "right" }; });
-        doc.autoTable({ ...base, startY: y + 2, head: [t.cols], body: rows, columnStyles: colStyles });
-      };
-      const T = Object.fromEntries(sec.tables.map((t) => [t.name, t]));
-      section("Pagamenti", T["Pagamenti"]);
-      section("Reparti", T["Reparti"]);
-      section("Fasce orarie", T["Fasce orarie"]);
-      if ((st.range?.days || 1) > 1) section("Andamento giornaliero", T["Giornaliero"]);
-      section("IVA", T["IVA"]);
-      section("Prodotti più venduti (primi 60)", { ...T["Prodotti"], cols: T["Prodotti"].cols.slice(1, 5), eur: [3],
-        rows: T["Prodotti"].rows.map((r) => r.slice(1, 5)) }, 60);
-      section("Operatori", T["Operatori"]);
-      section("Articoli eliminati", T["Eliminati"]);
+      let y = 34;
+      if (sp.kpi?.length) {
+        const kp = sp.kpi.map((k) => [k[0], fmtKpi(k)]); const half = Math.ceil(kp.length / 2);
+        doc.autoTable({ ...base, theme: "plain", startY: y, body: kp.slice(0, half).map((r, i) => [...r, ...(kp[half + i] || ["", ""])]),
+          columnStyles: { 0: { textColor: muted }, 1: { fontStyle: "bold", halign: "right" }, 2: { textColor: muted }, 3: { fontStyle: "bold", halign: "right" } } });
+        y = doc.lastAutoTable.finalY + 8;
+      }
+      for (const sec of sp.sections) {
+        if (y > H - 30) { doc.addPage(); y = 18; }
+        doc.setFontSize(11); doc.setFont(undefined, "bold"); doc.text(sec.name, 14, y); doc.setFont(undefined, "normal");
+        const colStyles = {}; sec.cols.forEach((_, i) => { if (sec.rows.some((r) => typeof r[i] === "number")) colStyles[i] = { halign: "right" }; });
+        doc.autoTable({ ...base, startY: y + 2, head: [sec.cols], body: sec.rows.map((r) => r.map((v, i) => fmtCell(v, i, sec))), columnStyles: colStyles,
+          didParseCell: (d) => { if (d.section === "body" && sec.boldLast && d.row.index === sec.rows.length - 1) d.cell.styles.fontStyle = "bold"; } });
+        y = doc.lastAutoTable.finalY + 8;
+      }
       const n = doc.getNumberOfPages();
       for (let i = 1; i <= n; i++) {
         doc.setPage(i); doc.setFontSize(8); doc.setTextColor(...muted);
-        doc.text(`Renko Stats · ${cur()?.name || ""} · ${rangeText()}`, 14, 290);
-        doc.text(`pagina ${i} di ${n}`, W - 14, 290, { align: "right" });
+        doc.text(`Renko Stats · ${cur()?.name || ""} · ${sp.title} · ${rangeText()}`, 14, H - 7);
+        doc.text(`pagina ${i} di ${n}`, W - 14, H - 7, { align: "right" });
       }
-      saveBlob(doc.output("blob"), fileBase() + ".pdf");
+      saveBlob(doc.output("blob"), `${fileBase()}_${sp.file || S.tab}.pdf`);
     } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+  }
+
+  // ------------------------------------------------------------------ stampa ESC/POS (tramite lo spooler)
+  function printPayload(sp) {
+    const sections = sp.sections.map((sec) => {
+      const idx = sec.print || [0, sec.cols.length - 1];
+      const max = sec.printMax || 60;
+      return { name: sec.name, head: idx.map((i) => String(sec.cols[i])), rows: sec.rows.slice(0, max).map((r) => idx.map((i) => fmtCell(r[i], i, sec))),
+        more: Math.max(0, sec.rows.length - max) };
+    });
+    return { store: cur()?.name || "", title: sp.title, period: rangeText(), printed_at: new Date().toLocaleString("it-IT", { dateStyle: "short", timeStyle: "short" }),
+      kpi: (sp.kpi || []).map((k) => [k[0], fmtKpi(k)]), sections };
+  }
+  // Anteprima: stessa impaginazione dello spooler (carta 80 mm = 48 caratteri)
+  function printPreviewText(p, width = 48) {
+    const L = [], line = (c = "-") => L.push(c.repeat(width));
+    const two = (a, b) => { a = String(a); b = String(b); const sp = width - a.length - b.length; L.push(sp >= 1 ? a + " ".repeat(sp) + b : (a.slice(0, Math.max(0, width - b.length - 1)) + " " + b)); };
+    const center = (t) => L.push(" ".repeat(Math.max(0, Math.floor((width - t.length) / 2))) + t);
+    center(p.store.toUpperCase()); center(p.title); center(p.period); line("=");
+    p.kpi.forEach(([a, b]) => two(a, b));
+    p.sections.forEach((sec) => {
+      line(); L.push(sec.name.toUpperCase());
+      // colonne: la prima prende lo spazio libero, le altre larghe quanto il valore più lungo (max 14)
+      const n = Math.max(...sec.rows.map((r) => r.length), 1);
+      const w = Array.from({ length: n }, (_, i) => i === 0 ? 0 : Math.min(14, Math.max(...sec.rows.map((r) => String(r[i] ?? "").length))));
+      const lw = width - w.slice(1).reduce((a, x) => a + x + 1, 0);
+      sec.rows.forEach((r) => {
+        if (r.length <= 2) return two(r[0], r[1] ?? "");
+        if (lw >= 8) {
+          const lab = String(r[0]); L.push((lab.length > lw ? lab.slice(0, lw) : lab.padEnd(lw)) + r.slice(1).map((v, i) => " " + String(v ?? "").padStart(w[i + 1])).join(""));
+        } else { L.push(String(r[0]).slice(0, width)); two("  " + r.slice(1, -1).join("  "), r[r.length - 1]); }
+      });
+      if (sec.more) L.push(`... altre ${sec.more} righe`);
+    });
+    line("="); center("Stampato " + p.printed_at);
+    return L.join("\n");
+  }
+  async function printDialog() {
+    let sp; try { sp = currentSpec(); } catch (e) { return toast(e.message); }
+    const p = printPayload(sp);
+    const devs = (await api.devices().catch(() => [])).filter((d) => d.store_id === S.storeId && d.enabled);
+    const printers = devs.filter((d) => d.info?.printer);
+    openDialog("Stampa su stampante termica", `
+      ${printers.length ? `<div class="field"><label>Stampa con</label><select id="prDev">${printers.map((d) => `<option value="${d.device_id}">${esc(d.name)} → ${esc(d.info.printer)}</option>`).join("")}</select></div>`
+        : `<p class="pill warn"><span class="dot"></span>Nessuno spooler di questo negozio ha una stampante configurata</p><p class="muted" style="font-size:13px">Nell'app Renko Stats Spooler sul tablet, sezione <b>Stampante</b>, inserisci l'indirizzo IP della stampante ESC/POS e premi <b>Salva</b>.</p>`}
+      <div class="muted" style="font-size:12px;margin:10px 0 4px">Anteprima (carta 80 mm)</div>
+      <pre style="background:#fff;color:#000;border:1px solid var(--border);border-radius:8px;padding:12px;font-size:11px;line-height:1.35;max-height:50vh;overflow:auto;white-space:pre">${esc(printPreviewText(p))}</pre>
+      <div class="toolbar" style="margin-top:10px"><button class="btn primary" id="prGo" ${printers.length ? "" : "disabled"}>🖨 Invia alla stampante</button><span id="prState" class="muted"></span></div>`);
+    const go = $("#prGo");
+    if (go) go.onclick = async () => {
+      go.disabled = true;
+      const st = $("#prState");
+      try {
+        const id = await api.printEnqueue(S.storeId, $("#prDev").value, `${sp.title} · ${rangeText()}`, p);
+        st.textContent = "In coda: lo spooler la stampa entro pochi secondi…";
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const j = await api.printStatus(id).catch(() => null);
+          if (!j) continue;
+          if (j.status === "done") { st.innerHTML = `<span class="pill ok"><span class="dot"></span>Stampato</span>`; return; }
+          if (j.status === "error") { st.innerHTML = `<span class="pill err"><span class="dot"></span>${esc(j.error || "errore")}</span>`; return; }
+          st.textContent = j.status === "printing" ? "Stampa in corso…" : "In coda…";
+        }
+        st.textContent = "Lo spooler non ha ancora preso la stampa: controlla che il tablet sia acceso (Monitoraggio).";
+      } catch (e) { toast(e.message); } finally { go.disabled = false; }
+    };
   }
 
   // ------------------------------------------------------------------ render
@@ -1132,7 +1189,8 @@
     $("#dFrom").value = S.from; $("#dTo").value = S.to;
     $("#rangeLabel").textContent = rangeText();
     $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && !["monitor", "documents", "vat"].includes(S.tab));
-    $("#exportBtns").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab));
+    S.exportSpec = null;
+    $("#exportBtns").classList.add("hidden");
     if (!S.storeId) { view.innerHTML = S.isAdmin ? "" : empty("Nessun negozio associato al tuo account. Contatta l'amministratore."); if (!S.isAdmin) return; S.tab = "admin"; }
     view.classList.add("loading");
     try {
@@ -1151,6 +1209,7 @@
       if (typeof out === "string") out = { html: out };
       view.innerHTML = out.html;
       out.after && out.after();
+      $("#exportBtns").classList.toggle("hidden", typeof S.exportSpec !== "function");
       $$("[data-go]", view).forEach((b) => b.onclick = () => setTab(b.dataset.go));
     } catch (err) {
       if (seq !== renderSeq) return;
@@ -1238,6 +1297,7 @@
     $("#xlsBtn").onclick = exportExcel;
     $("#appBtn").onclick = showAppDialog;
     $("#pdfBtn").onclick = exportPdf;
+    $("#prnBtn").onclick = printDialog;
     $("#themeBtn").onclick = () => {
       const curT = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       const next = curT === "dark" ? "light" : "dark";
