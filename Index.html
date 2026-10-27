@@ -5,13 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Renko Stats</title>
   <meta name="theme-color" content="#0f766e">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Renko Stats">
+  <meta name="mobile-web-app-capable" content="yes">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230f766e'/%3E%3Cpath fill='white' d='M5 18h3v-6H5zm5.5 0h3V6h-3zm5.5 0h3v-9h-3z'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=1.8.2">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <script src="config.js"></script>
+  <script src="config.js?v=1.8.2"></script>
 </head>
 <body>
   <div id="demoBanner" class="demo-banner hidden">Modalità demo · dati di prova</div>
@@ -21,10 +26,13 @@
     <form class="login-card" id="loginForm">
       <div class="brand"><span class="brand-mark"><svg viewBox="0 0 24 24"><path d="M5 18h3v-6H5zm5.5 0h3V6h-3zm5.5 0h3v-9h-3z"/></svg></span>Renko Stats</div>
       <p class="muted" style="margin:8px 0 0">Statistiche di vendita dei tuoi locali</p>
-      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required></div>
-      <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" enterkeyhint="next" required></div>
+      <div class="field"><label for="password">Password</label><div class="pw-wrap"><input id="password" type="password" autocomplete="current-password" enterkeyhint="go" required><button type="button" class="pw-eye" id="pwEye" aria-label="Mostra password">👁</button></div></div>
       <button class="btn primary" style="width:100%;margin-top:18px" type="submit">Accedi</button>
-      <button class="btn" style="width:100%;margin-top:8px" type="button" id="forgotBtn">Password dimenticata</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn" style="flex:1" type="button" id="signupBtn">Crea account</button>
+        <button class="btn" style="flex:1" type="button" id="forgotBtn">Password dimenticata</button>
+      </div>
       <div class="error" id="loginError"></div>
     </form>
   </section>
@@ -37,6 +45,7 @@
         <select id="storeSelect" class="store-select" aria-label="Negozio"></select>
         <span class="spacer"></span>
         <span id="syncInfo" class="pill"></span>
+        <button class="btn small" id="appBtn" title="Installa o scarica l'app">📱 App</button>
         <button class="btn small" id="themeBtn" title="Tema chiaro/scuro">Tema</button>
         <span class="user-chip" id="userChip"></span>
         <button class="btn small" id="logoutBtn">Esci</button>
@@ -47,6 +56,8 @@
         <button class="tab" data-tab="payments">Pagamenti</button>
         <button class="tab" data-tab="finance">Finanziario</button>
         <button class="tab" data-tab="hours">Fasce orarie</button>
+        <button class="tab" data-tab="documents">Documenti</button>
+        <button class="tab" data-tab="vat">IVA</button>
         <button class="tab" data-tab="calendar">Calendario</button>
         <button class="tab" data-tab="monitor">Monitoraggio</button>
         <button class="tab hidden" data-tab="admin" id="adminTab">Admin</button>
@@ -68,14 +79,20 @@
           <input type="date" id="dFrom" aria-label="Dal"> <span class="muted">→</span> <input type="date" id="dTo" aria-label="Al">
         </div>
         <span class="range-label" id="rangeLabel"></span>
+        <span class="export-btns" id="exportBtns">
+          <button class="btn small" id="xlsBtn" title="Scarica la scheda aperta in Excel">⬇ Excel</button>
+          <button class="btn small" id="pdfBtn" title="Scarica la scheda aperta in PDF">⬇ PDF</button>
+          <button class="btn small" id="prnBtn" title="Stampa su stampante termica tramite lo spooler">🖨 Stampa</button>
+        </span>
       </div>
 
       <div id="view"></div>
+      <div class="app-version" id="appVersion"></div>
     </main>
   </section>
 
   <dialog id="dlg"><div class="dlg-head"><span id="dlgTitle"></span><button class="btn small" id="dlgClose">Chiudi</button></div><div class="dlg-body" id="dlgBody"></div></dialog>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=1.8.2"></script>
 </body>
 </html>
