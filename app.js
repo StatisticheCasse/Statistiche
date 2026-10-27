@@ -3,7 +3,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.4.0";
+  const APP_VERSION = "1.7.0";
   const CFG = window.RENKO_CONFIG || {};
   console.info("Renko Stats " + APP_VERSION);
   const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
@@ -72,6 +72,7 @@
         if (b.mode === "preview") return unwrap(await sb.rpc("report_preview", { p_store: b.store_id, p_day: b.day }));
         return { result: unwrap(await sb.rpc("report_send", { p_store: b.store_id, p_day: b.day, p_test: b.mode === "test" })) };
       },
+      async adminIngest(store, p) { return unwrap(await sb.rpc("admin_ingest", { p_store: store, p })); },
       async admin(b) {
         switch (b.action) {
           case "list_members": return { members: unwrap(await sb.rpc("admin_list_members", { p_store: b.store_id })) };
@@ -121,6 +122,7 @@
       async syncLog() { return Array.from({ length: 8 }, (_, i) => ({ at: new Date(Date.now() - i * 3e5 * 7).toISOString(), ok: i !== 5, counts: { lines: 40 - i * 3, receipts: 6, payments: 6, deleted: 0 }, error: i === 5 ? "rete: timeout" : null })); },
       async emailLog() { return Array.from({ length: 6 }, (_, i) => ({ created_at: addDays(new Date(), -i).toISOString(), day: iso(addDays(new Date(), -i - 1)), kind: "daily", status: i === 3 ? "error" : "sent", recipients: ["titolare@example.com"], subject: "Riepilogo", error: i === 3 ? "Resend 422: dominio non verificato" : null })); },
       async saveSettings() {}, async report() { return { ok: true, html: "<p style='font-family:sans-serif;padding:20px'>Anteprima disponibile con il backend collegato.</p>", result: { status: "sent" } }; },
+      async adminIngest(store, p) { (window.__ingest ||= []).push(p); await new Promise((r) => setTimeout(r, 5)); return {}; },
       async admin(b) { return b.action === "list_members" ? { members: [{ user_id: "u1", email: "titolare@example.com", role: "owner" }] } : { activation_code: "RS1.eyJ1IjoiaHR0cHM6Ly9kZW1vIiwiayI6ImRlbW8iLCJzIjoiZGVtbyJ9" }; },
       async upsertStore(s) { return { ...demoStore, ...s }; }, async deleteStore() {}, async updateDevice() {}, async deleteDevice() {},
     };
@@ -210,9 +212,7 @@
 
   function downloadCsv(name, rows) {
     const csv = rows.map((r) => r.map((v) => typeof v === "number" ? String(v).replace(".", ",") : `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\r\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
-    a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    saveBlob(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }), name);
   }
 
   // ------------------------------------------------------------------ viste
@@ -416,7 +416,7 @@
                ...rows.map((r) => [String(r.datam).slice(0, 10), String(r.datam).slice(11, 16), r.n_doc, r.n_chiusura, r.matricola, r.opdes, r.tavolo, r.pagamenti, r.flg_nf ? "sì" : "", round2(r.totale)])];
           const ws = X.utils.aoa_to_sheet(aoa); const wb = X.utils.book_new();
           X.utils.book_append_sheet(wb, ws, isFt ? "Fatture" : "Documenti commerciali");
-          X.writeFile(wb, `${fileBase()}_${isFt ? "fatture" : "documenti"}.xlsx`);
+          writeXlsx(wb, `${fileBase()}_${isFt ? "fatture" : "documenti"}.xlsx`);
         } catch (e) { toast(e.message); }
       };
     } };
@@ -486,7 +486,7 @@
             }
             X.utils.book_append_sheet(wb, ws, name);
           }
-          X.writeFile(wb, fileBase() + "_iva.xlsx");
+          writeXlsx(wb, fileBase() + "_iva.xlsx");
         } catch (e) { toast(e.message); }
       };
     } };
@@ -514,7 +514,84 @@
     } catch (e) { toast(e.message); }
   }
 
-  views.hours = (st) => {
+  // Fasce orarie: con un solo giorno selezionato, confronto con lo stesso giorno della settimana precedente
+  views.hours = async (st) => {
+    if (S.from !== S.to) return views.hoursRange(st);
+    const prevDay = iso(addDays(parseD(S.from), -7));
+    const prev = await api.stats(S.storeId, prevDay, prevDay);
+    return hoursCompare(st, prev, prevDay);
+  };
+
+  function hoursCompare(st, prev, prevDay) {
+    const cut = st.range?.cutoff_hour ?? 0;
+    const order = (h) => (h - cut + 24) % 24;
+    const cur = Object.fromEntries((st.hourly || []).map((h) => [h.ora, h]));
+    const old = Object.fromEntries((prev.hourly || []).map((h) => [h.ora, h]));
+    let hours = Array.from({ length: 24 }, (_, i) => (i + cut) % 24)
+      .map((o) => ({ ora: o, a: cur[o] || { netto: 0, scontrini: 0 }, b: old[o] || { netto: 0, scontrini: 0 } }));
+    let i0 = hours.findIndex((h) => h.a.netto || h.b.netto || h.a.scontrini || h.b.scontrini);
+    let i1 = hours.length - 1 - [...hours].reverse().findIndex((h) => h.a.netto || h.b.netto || h.a.scontrini || h.b.scontrini);
+    if (i0 < 0) return empty(`Nessuna vendita né il ${fmtDay(S.from, { weekday: "long", day: "numeric", month: "long" })} né il ${fmtDay(prevDay, { weekday: "long", day: "numeric", month: "long" })}`);
+    hours = hours.slice(i0, i1 + 1);
+    const dayLbl = fmtDay(S.from, { weekday: "short", day: "numeric", month: "short" });
+    const prevLbl = fmtDay(prevDay, { weekday: "short", day: "numeric", month: "short" });
+    const diffCell = (a, b, money = true) => {
+      const d = a - b;
+      const cls = Math.abs(d) < 0.005 ? "muted" : d > 0 ? "delta up" : "delta down";
+      const p = b && Math.abs(d) >= 0.005 ? ` <span style="font-weight:400">(${d >= 0 ? "+" : "−"}${Math.abs((d / Math.abs(b)) * 100).toFixed(0)}%)</span>` : "";
+      return `<td class="r ${cls}">${d > 0 ? "+" : d < 0 ? "−" : ""}${money ? eur(Math.abs(d)) : num(Math.abs(d))}${p}</td>`;
+    };
+    const T = hours.reduce((t, h) => ({ an: t.an + h.a.netto, as: t.as + h.a.scontrini, bn: t.bn + h.b.netto, bs: t.bs + h.b.scontrini }), { an: 0, as: 0, bn: 0, bs: 0 });
+    const k = st.kpi, pk = prev.kpi || {};
+    // fasce del giorno a confronto
+    const bands = [["Mattina", cut, 11], ["Pranzo", 11, 15], ["Pomeriggio", 15, 19], ["Cena", 19, 23], ["Notte", 23, 24 + cut]].map(([name, a, b]) => {
+      const inBand = (h) => { const o = h.ora < cut ? h.ora + 24 : h.ora; return o >= a && o < b; };
+      const sum = (arr, f) => (arr || []).filter(inBand).reduce((x, h) => x + h[f], 0);
+      return { name, range: `${hh(a % 24)}–${hh(b % 24)}`, an: sum(st.hourly, "netto"), as: sum(st.hourly, "scontrini"), bn: sum(prev.hourly, "netto"), bs: sum(prev.hourly, "scontrini") };
+    }).filter((b) => b.as || b.bs);
+    const html = `
+      <div class="grid kpis">
+        ${kpi("Incasso " + dayLbl, eur(T.an), delta(T.an, T.bn, "vs " + prevLbl), true)}
+        ${kpi("Incasso " + prevLbl, eur(T.bn), `<div class="delta flat">stesso giorno settimana precedente</div>`)}
+        ${kpi("Differenza", `${T.an - T.bn >= 0 ? "+" : "−"}${eur(Math.abs(T.an - T.bn))}`, `<div class="delta ${T.an >= T.bn ? "up" : "down"}">${T.bn ? ((T.an - T.bn) / T.bn * 100).toFixed(1) + "%" : "—"}</div>`)}
+        ${kpi("Scontrini", `${num(T.as)} <span class="muted" style="font-size:14px">vs ${num(T.bs)}</span>`, delta(T.as, T.bs, "vs " + prevLbl))}
+        ${kpi("Scontrino medio", eur(T.as ? T.an / T.as : 0), delta(T.as ? T.an / T.as : 0, T.bs ? T.bn / T.bs : 0, "vs " + prevLbl))}
+        ${kpi("Coperti", `${num(k.coperti)} <span class="muted" style="font-size:14px">vs ${num(pk.coperti)}</span>`, delta(Number(k.coperti), Number(pk.coperti), "vs " + prevLbl))}
+      </div>
+      <div style="margin-bottom:12px">${card(`Incasso per ora: ${dayLbl} e ${prevLbl}`, "Stesso giorno della settimana precedente in grigio", `<div class="chart-box tall"><canvas id="cCmp"></canvas></div>`)}</div>
+      <div class="grid cols-2" style="align-items:start">
+        ${card("Confronto ora per ora", "", `<div class="table-wrap"><table class="data">
+          <thead><tr><th rowspan="2">Ora</th><th colspan="2" class="r" style="text-align:center">${esc(dayLbl)}</th><th colspan="2" class="r" style="text-align:center">${esc(prevLbl)}</th><th colspan="2" class="r" style="text-align:center">Differenza</th></tr>
+          <tr><th class="r">Sc.</th><th class="r">Incasso</th><th class="r">Sc.</th><th class="r">Incasso</th><th class="r">Sc.</th><th class="r">Incasso</th></tr></thead>
+          <tbody>${hours.map((h) => `<tr><td>${hh(h.ora)}:00–${hh((h.ora + 1) % 24)}:00</td>
+            <td class="r">${num(h.a.scontrini)}</td><td class="r"><b>${eur(h.a.netto)}</b></td>
+            <td class="r muted">${num(h.b.scontrini)}</td><td class="r muted">${eur(h.b.netto)}</td>
+            ${diffCell(h.a.scontrini, h.b.scontrini, false)}${diffCell(h.a.netto, h.b.netto)}</tr>`).join("")}</tbody>
+          <tfoot><tr><td>Totale</td><td class="r">${num(T.as)}</td><td class="r">${eur(T.an)}</td><td class="r">${num(T.bs)}</td><td class="r">${eur(T.bn)}</td>
+            ${diffCell(T.as, T.bs, false)}${diffCell(T.an, T.bn)}</tr></tfoot></table></div>`)}
+        ${card("Fasce del giorno a confronto", "", `<table class="data"><thead><tr><th>Fascia</th><th class="r">${esc(dayLbl)}</th><th class="r">${esc(prevLbl)}</th><th class="r">Differenza</th></tr></thead><tbody>
+          ${bands.map((b) => `<tr><td><b>${b.name}</b> <span class="muted">${b.range}</span><div class="muted" style="font-size:11px">${num(b.as)} sc. vs ${num(b.bs)}</div></td><td class="r">${eur(b.an)}</td><td class="r muted">${eur(b.bn)}</td>${diffCell(b.an, b.bn)}</tr>`).join("")}
+          </tbody></table>`)}
+      </div>`;
+    return { html, after() {
+      const accent = css("--accent"), muted = css("--muted"), grid = css("--grid");
+      charts.push(new Chart($("#cCmp"), {
+        type: "bar",
+        data: { labels: hours.map((h) => hh(h.ora)), datasets: [
+          { label: prevLbl, data: hours.map((h) => h.b.netto), backgroundColor: "rgba(148,163,184,.55)", borderRadius: 4, maxBarThickness: 30 },
+          { label: dayLbl, data: hours.map((h) => h.a.netto), backgroundColor: accent, borderRadius: 4, maxBarThickness: 30 },
+        ] },
+        options: { maintainAspectRatio: false, animation: { duration: 250 },
+          plugins: { legend: { display: true, labels: { color: muted, boxWidth: 12 } },
+            tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${eur(c.parsed.y)} · ${(c.datasetIndex ? hours[c.dataIndex].a : hours[c.dataIndex].b).scontrini} sc.`,
+              afterBody: (items) => { const h = hours[items[0].dataIndex]; const d = h.a.netto - h.b.netto; return `Differenza: ${d >= 0 ? "+" : "−"}${eur(Math.abs(d))}`; } } } },
+          scales: { x: { grid: { display: false }, ticks: { color: muted }, border: { display: false } },
+            y: { grid: { color: grid }, ticks: { color: muted, callback: (v) => eur0(v) }, border: { display: false }, beginAtZero: true } } },
+      }));
+    } };
+  }
+
+  views.hoursRange = (st) => {
     const cut = st.range?.cutoff_hour ?? 0;
     const hours = trimHours(sortedHours(st));
     if (!hours.length || !st.kpi.scontrini) return empty();
@@ -654,6 +731,136 @@
     } };
   };
 
+  // ---------------------------------------------------------------- import storico (sql.js nel browser)
+  const IMP = {
+    tables: [
+      { key: "receipts", table: "headmov", pk: "nmov", cols: ["nmov", "datam", "operatore", "opdes", "tavolo", "asporto", "totale", "totaleNF",
+        "flgNF", "sospeso", "nChiusura", "nfat", "cliente", "clides", "fromweb", "sezionale", "nscontrinoffm", "matricolacassap", "datam2", "datam3"] },
+      { key: "lines", table: "Venduto", pk: "chiave", cols: ["chiave", "nmov", "codint", "descrizione", "qta", "prezzov", "importo", "scov", "scop",
+        "reparto", "iva", "aliquota", "flgNF", "sospeso", "cameriere", "turno", "FromWeb", "datam", "datam2", "datam3"] },
+      { key: "payments", table: "CausaliPagamenti", pk: "chiave", cols: ["chiave", "codice", "descrizione", "datam", "nmov", "qta", "importo", "sospeso", "datam2", "datam3"] },
+      { key: "deleted", table: "eliminati", pk: "chiave", cols: ["chiave", "codint", "nmov", "datam", "operatore", "qta", "importo", "tavolo"] },
+    ],
+    lookups: {
+      departments: ["reparti", ["codice", "descrizione"]],
+      payment_types: ["pagamenti", ["codice", "descrizione", "RTPagamento"]],
+      operators: ["operatori", ["codice", "descrizione"]],
+      products: ["anagra", ["codint", "descrizione", "reparto", "list1"]],
+      invoices: ["FEDatiMov", ["Chiave", "TipoDoc", "DataDoc", "NumeroDoc", "Sezionale", "CodCli", "CFCli", "DenominazioneCli", "NomeCli",
+        "CognomeCli", "IndirizzoCli", "CAPCli", "ComuneCli", "ProvinciaCli", "NazioneCli", "TipoPagamento", "NomeFile", "ProgInvio"]],
+    },
+    keep: new Set(["chiave", "nmov", "datam", "codice", "reparto", "iva", "aliquota", "operatore", "qta", "importo", "totale"]),
+  };
+  function impCols(db, table, wanted) {
+    try {
+      const r = db.exec(`PRAGMA table_info("${table}")`);
+      if (!r.length) return [];
+      const have = Object.fromEntries(r[0].values.map((v) => [String(v[1]).toLowerCase(), v[1]]));
+      return wanted.map((w) => have[w.toLowerCase()]).filter(Boolean);
+    } catch { return []; }
+  }
+  function impRows(db, table, cols) {
+    const out = [];
+    const st = db.prepare(`SELECT ${cols.map((c) => `"${c}"`).join(",")} FROM "${table}"`);
+    while (st.step()) out.push(st.getAsObject());
+    st.free();
+    return out;
+  }
+  // stessa logica dello spooler: RistorAndro scrive mese/giorno/anno, l'ora vera è in datam3/datam2
+  function impDate(v) {
+    if (v == null || v === "") return null;
+    const s = String(v).trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/), y, mo, d, h, mi, se;
+    if (m) [, y, mo, d, h, mi, se] = m;
+    else {
+      m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+      if (!m) return null;
+      let a, b; [, a, b, y, h, mi, se] = m;
+      if (+a > 12) { d = a; mo = b; } else { mo = a; d = b; }
+    }
+    const p2 = (x) => String(+(x || 0)).padStart(2, "0");
+    return `${y}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(se)}`;
+  }
+  function impClean(o) {
+    let dt = null;
+    for (const k of ["datam3", "datam2", "datam"]) {
+      if (k in o) { const n = impDate(o[k]); if (!dt && n && !n.startsWith("1900")) dt = n; delete o[k]; }
+    }
+    o.datam = dt;
+    for (const k of Object.keys(o)) { const v = o[k]; if ((v === 0 || v === "" || v === null) && !IMP.keep.has(k)) delete o[k]; }
+    return o;
+  }
+  async function importHistory(store) {
+    const fv = $("#impVen").files[0], fa = $("#impAna").files[0];
+    const out = $("#impOut");
+    if (!fv) return toast("Scegli il file Venduto.db");
+    if (!confirm(`Importare lo storico di "${fv.name}" nel negozio "${store.name}"?`)) return;
+    const btn = $("#impGo"); btn.disabled = true;
+    const log = (h) => { out.innerHTML = h; };
+    try {
+      log("Carico il lettore di database…");
+      await loadScript("https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/sql-wasm.js");
+      const SQL = await window.initSqlJs({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/${f}` });
+      log("Leggo i file…");
+      const ven = new SQL.Database(new Uint8Array(await fv.arrayBuffer()));
+      const ana = fa ? new SQL.Database(new Uint8Array(await fa.arrayBuffer())) : null;
+      // anagrafiche: prima Anagra.db, poi Venduto.db
+      const lookups = {};
+      for (const [k, [t, w]] of Object.entries(IMP.lookups)) {
+        lookups[k] = [];
+        for (const db of [ana, ven].filter(Boolean)) {
+          const c = impCols(db, t, w); if (!c.length) continue;
+          const rows = impRows(db, t, c); if (rows.length) { lookups[k] = rows; break; }
+        }
+      }
+      // tabelle di vendita: dal Venduto.db, se manca (es. eliminati) dall'Anagra.db
+      const data = {}; let totale = 0;
+      for (const t of IMP.tables) {
+        let db = ven, c = impCols(ven, t.table, t.cols);
+        if (!c.length && ana) { db = ana; c = impCols(ana, t.table, t.cols); }
+        data[t.key] = c.length ? impRows(db, t.table, c).map(impClean).filter((r) => r.datam) : [];
+        if (t.key === "lines") totale = data.lines.reduce((a, r) => a + (Number(r.importo) || 0), 0);
+      }
+      ven.close(); ana && ana.close();
+      // lotti da inviare
+      const jobs = [];
+      const lk = { ...lookups }; const inv = lk.invoices || []; delete lk.invoices;
+      jobs.push({ label: "anagrafiche", n: 0, p: { lookups: lk } });
+      for (let i = 0; i < inv.length; i += 500) jobs.push({ label: "fatture", n: Math.min(500, inv.length - i), p: { lookups: { invoices: inv.slice(i, i + 500) } } });
+      for (const t of IMP.tables) {
+        const rows = data[t.key];
+        for (let i = 0; i < rows.length; i += 1000) jobs.push({ label: t.key, n: Math.min(1000, rows.length - i), p: { [t.key]: rows.slice(i, i + 1000) } });
+      }
+      const nRows = { receipts: data.receipts.length, lines: data.lines.length, payments: data.payments.length, deleted: data.deleted.length, invoices: inv.length };
+      let done = 0, failed = 0;
+      const show = () => log(`<div style="font-size:13px;margin-bottom:6px">Invio ${done} / ${jobs.length} blocchi…${failed ? ` <span style="color:var(--bad)">${failed} ripetuti</span>` : ""}</div>
+        <div style="height:10px;background:var(--surface-2);border-radius:5px;overflow:hidden"><div style="height:100%;width:${(done / jobs.length * 100).toFixed(1)}%;background:var(--accent)"></div></div>
+        <div class="muted" style="font-size:12px;margin-top:6px">Nel file: ${num(nRows.lines)} righe · ${num(nRows.receipts)} conti · ${num(nRows.payments)} pagamenti · ${num(nRows.invoices)} fatture · totale vendite ${eur(totale)}. Non chiudere la pagina.</div>`);
+      show();
+      let idx = 0;
+      const worker = async () => {
+        while (idx < jobs.length) {
+          const j = jobs[idx++];
+          for (let tent = 1; ; tent++) {
+            try { await api.adminIngest(store.id, j.p); break; }
+            catch (e) { failed++; if (tent >= 4) throw new Error(`blocco ${j.label}: ${e.message}`); await new Promise((r) => setTimeout(r, 1500 * tent)); }
+          }
+          done++; if (done % 3 === 0 || done === jobs.length) show();
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      log(`<div class="pill ok" style="margin-bottom:8px"><span class="dot"></span>Importazione completata</div>
+        <table class="data" style="max-width:520px"><tbody>
+        <tr><td>Righe vendute</td><td class="r">${num(nRows.lines)}</td></tr><tr><td>Conti (scontrini e fatture)</td><td class="r">${num(nRows.receipts)}</td></tr>
+        <tr><td>Pagamenti</td><td class="r">${num(nRows.payments)}</td></tr><tr><td>Righe eliminate</td><td class="r">${num(nRows.deleted)}</td></tr>
+        <tr><td>Fatture elettroniche</td><td class="r">${num(nRows.invoices)}</td></tr><tr><td><b>Totale vendite nel file</b></td><td class="r"><b>${eur(totale)}</b></td></tr>
+        </tbody></table><div class="muted" style="font-size:12px;margin-top:6px">Apri Panoramica e scegli "Anno" per vedere i dati.</div>`);
+      window.__importResult = { nRows, totale };
+    } catch (e) {
+      log(`<div class="pill err"><span class="dot"></span>Errore</div> <span style="color:var(--bad)">${esc(e.message)}</span><div class="muted" style="font-size:12px">Puoi rilanciare l'importazione: i dati già caricati non vengono duplicati.</div>`);
+    } finally { btn.disabled = false; }
+  }
+
   views.admin = async () => {
     if (!S.isAdmin) return empty("Sezione riservata agli amministratori");
     const s = cur();
@@ -698,8 +905,16 @@
             <div class="muted" style="font-size:12px;margin-top:8px">L'utente deve prima registrarsi dalla pagina di accesso con <b>Crea account</b>, poi lo abiliti qui.</div>
             <div class="toolbar" style="margin-top:10px"><button class="btn primary" type="submit">Aggiungi utente</button></div>
           </form>`) : ""}
-      </div>`;
+      </div>
+      ${s ? `<div style="margin-top:12px">${card(`Importa storico in "${esc(s.name)}"`, "Carica le vendite passate direttamente dai file di RistorAndro. Si può ripetere: non crea doppioni.", `
+        <div class="grid cols-2" style="gap:8px">
+          <div class="field"><label>Venduto.db (vendite) — obbligatorio</label><input type="file" id="impVen" accept=".db,.db3,.sqlite"></div>
+          <div class="field"><label>Anagra.db (reparti, pagamenti, eliminati) — consigliato</label><input type="file" id="impAna" accept=".db,.db3,.sqlite"></div>
+        </div>
+        <div class="toolbar" style="margin-top:12px"><button class="btn primary" id="impGo">Importa nel negozio ${esc(s.name)}</button></div>
+        <div id="impOut" style="margin-top:12px"></div>`)}</div>` : ""}`;
     return { html, after() {
+      $("#impGo") && ($("#impGo").onclick = () => importHistory(s));
       $$(".storeForm").forEach((f) => f.onsubmit = async (e) => {
         e.preventDefault();
         const fd = new FormData(f);
@@ -751,6 +966,21 @@
     autotable: "https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js",
   };
   const loaded = {};
+  // Salva un file: nel browser scarica, nell'app Android lo passa all'app (che lo mette in Download)
+  function saveBlob(blob, filename) {
+    if (window.RenkoApp && window.RenkoApp.saveFile) {
+      const fr = new FileReader();
+      fr.onload = () => { window.RenkoApp.saveFile(String(fr.result).split(",")[1], filename, blob.type || "application/octet-stream"); };
+      fr.readAsDataURL(blob);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const writeXlsx = (wb, filename) => saveBlob(new Blob([window.XLSX.write(wb, { bookType: "xlsx", type: "array" })], { type: XLSX_MIME }), filename);
   function loadScript(url) {
     return loaded[url] ??= new Promise((ok, ko) => {
       const el = document.createElement("script");
@@ -832,7 +1062,7 @@
         ws["!autofilter"] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: t.rows.length, c: t.cols.length - 1 } }) };
         X.utils.book_append_sheet(wb, ws, t.name);
       }
-      X.writeFile(wb, fileBase() + ".xlsx");
+      writeXlsx(wb, fileBase() + ".xlsx");
     } catch (e) { toast(e.message); } finally { btn.disabled = false; }
   }
 
@@ -886,7 +1116,7 @@
         doc.text(`Renko Stats · ${cur()?.name || ""} · ${rangeText()}`, 14, 290);
         doc.text(`pagina ${i} di ${n}`, W - 14, 290, { align: "right" });
       }
-      doc.save(fileBase() + ".pdf");
+      saveBlob(doc.output("blob"), fileBase() + ".pdf");
     } catch (e) { toast(e.message); } finally { btn.disabled = false; }
   }
 
@@ -911,7 +1141,8 @@
         S.stats = await api.stats(S.storeId, S.from, S.to);
         if (seq !== renderSeq) return;
         updateSyncInfo();
-        out = views[S.tab](S.stats);
+        out = await views[S.tab](S.stats);
+        if (seq !== renderSeq) return;
       } else {
         out = await views[S.tab]();
         if (seq !== renderSeq) return;
@@ -954,6 +1185,38 @@
     sel.classList.toggle("hidden", S.stores.length === 0);
   }
 
+  // Installazione: PWA (Android/iPhone/PC) e APK Android
+  let installPrompt = null;
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; });
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => null);
+  async function showAppDialog() {
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const inApp = !!window.RenkoApp || matchMedia("(display-mode: standalone)").matches;
+    let apkOk = false;
+    try { const r = await fetch("download/RenkoStats.apk", { method: "HEAD", cache: "no-store" }); apkOk = r.ok && !(r.headers.get("content-type") || "").includes("text/html"); } catch { /* ok */ }
+    openDialog("Scarica l'app", `
+      ${inApp ? `<p class="pill ok" style="margin-bottom:12px"><span class="dot"></span>Stai già usando l'app</p>` : ""}
+      <div class="grid cols-2">
+        <div class="card"><h3>📱 Installa sul telefono</h3>
+          <p class="muted" style="font-size:13px">Aggiunge Renko Stats alla schermata Home: si apre a schermo intero come un'app. Funziona su Android, iPhone e PC.</p>
+          ${isIos ? `<ol style="font-size:13px;padding-left:18px"><li>Apri questa pagina con <b>Safari</b></li><li>Tocca <b>Condividi</b> (il quadrato con la freccia)</li><li>Scegli <b>Aggiungi alla schermata Home</b></li></ol>`
+            : installPrompt ? `<button class="btn primary" id="pwaInstall">Installa Renko Stats</button>`
+            : `<p style="font-size:13px">Dal menu del browser (⋮) scegli <b>Installa app</b> o <b>Aggiungi a schermata Home</b>.</p>`}
+        </div>
+        <div class="card"><h3>🤖 App Android (APK)</h3>
+          <p class="muted" style="font-size:13px">App Android dedicata. Scarica Excel e PDF direttamente nella cartella Download del telefono.</p>
+          ${apkOk ? `<a class="btn primary" href="download/RenkoStats.apk" download>Scarica APK</a>
+            <p class="muted" style="font-size:11px;margin-top:8px">Alla prima installazione Android chiede di consentire le app da "origini sconosciute".</p>`
+            : `<p style="font-size:13px" class="muted">APK non ancora pubblicato: caricalo su GitHub nella cartella <b>download</b> con il nome <b>RenkoStats.apk</b>.</p>`}
+        </div>
+      </div>
+      <div style="margin-top:12px;text-align:center"><img alt="QR" style="width:150px;height:150px;border-radius:8px;background:#fff;padding:6px"
+        src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(location.origin + location.pathname)}">
+        <div class="muted" style="font-size:12px">Inquadra con il telefono per aprire il sito</div></div>`);
+    const b = $("#pwaInstall");
+    if (b) b.onclick = async () => { installPrompt.prompt(); await installPrompt.userChoice.catch(() => null); installPrompt = null; $("#dlg").close(); };
+  }
+
   function openDialog(title, html) {
     $("#dlgTitle").textContent = title; $("#dlgBody").innerHTML = html; $("#dlg").showModal();
   }
@@ -973,6 +1236,7 @@
     $("#logoutBtn").onclick = async () => { await api.logout(); location.reload(); };
     $("#dlgClose").onclick = () => $("#dlg").close();
     $("#xlsBtn").onclick = exportExcel;
+    $("#appBtn").onclick = showAppDialog;
     $("#pdfBtn").onclick = exportPdf;
     $("#themeBtn").onclick = () => {
       const curT = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
