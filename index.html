@@ -13,10 +13,10 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230f766e'/%3E%3Cpath fill='white' d='M5 18h3v-6H5zm5.5 0h3V6h-3zm5.5 0h3v-9h-3z'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=1.7.0">
+  <link rel="stylesheet" href="style.css?v=1.8.1">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <script src="config.js?v=1.7.0"></script>
+  <script src="config.js?v=1.8.1"></script>
 </head>
 <body>
   <div id="demoBanner" class="demo-banner hidden">Modalità demo · dati di prova</div>
@@ -80,8 +80,9 @@
         </div>
         <span class="range-label" id="rangeLabel"></span>
         <span class="export-btns" id="exportBtns">
-          <button class="btn small" id="xlsBtn" title="Scarica le statistiche del periodo in Excel">⬇ Excel</button>
-          <button class="btn small" id="pdfBtn" title="Scarica il riepilogo del periodo in PDF">⬇ PDF</button>
+          <button class="btn small" id="xlsBtn" title="Scarica la scheda aperta in Excel">⬇ Excel</button>
+          <button class="btn small" id="pdfBtn" title="Scarica la scheda aperta in PDF">⬇ PDF</button>
+          <button class="btn small" id="prnBtn" title="Stampa su stampante termica tramite lo spooler">🖨 Stampa</button>
         </span>
       </div>
 
@@ -92,6 +93,6 @@
 
   <dialog id="dlg"><div class="dlg-head"><span id="dlgTitle"></span><button class="btn small" id="dlgClose">Chiudi</button></div><div class="dlg-body" id="dlgBody"></div></dialog>
 
-  <script src="app.js?v=1.7.0"></script>
+  <script src="app.js?v=1.8.1"></script>
 </body>
 </html>
