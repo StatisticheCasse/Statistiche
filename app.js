@@ -3,11 +3,21 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.8.0";
+  const APP_VERSION = "1.8.1";
   const CFG = window.RENKO_CONFIG || {};
   console.info("Renko Stats " + APP_VERSION);
   const DEMO = new URLSearchParams(location.search).has("demo") || !CFG.SUPABASE_URL || CFG.SUPABASE_URL.includes("XXXX") || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_ANON_KEY.includes("INCOLLA");
   const $ = (s, r = document) => r.querySelector(s);
+  // collega un evento solo se l'elemento esiste (pagina e script di versioni diverse non bloccano più tutto)
+  const on = (sel, ev, fn) => { const el = document.querySelector(sel); if (el) el[ev] = fn; return el; };
+  // qualsiasi errore all'avvio viene mostrato invece di lasciare la pagina bianca
+  window.addEventListener("error", (e) => {
+    if (document.getElementById("login")?.classList.contains("hidden") && document.getElementById("app")?.classList.contains("hidden")) {
+      document.body.insertAdjacentHTML("beforeend", `<div style="max-width:560px;margin:60px auto;padding:20px;font-family:sans-serif;border:1px solid #fecaca;background:#fef2f2;border-radius:12px;color:#7f1d1d">
+        <b>La pagina non si è caricata correttamente.</b><br>Probabilmente i file del sito non sono tutti aggiornati alla stessa versione (index.html e app.js).
+        Ricarica con Ctrl+F5; se il problema resta, ricarica su GitHub tutti i file del sito.<br><small style="color:#991b1b">${String(e.message || e).replace(/</g, "&lt;")}</small></div>`);
+    }
+  });
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
   // ------------------------------------------------------------------ formattazione
@@ -1190,7 +1200,7 @@
     $("#rangeLabel").textContent = rangeText();
     $("#filters").classList.toggle("hidden", !NEEDS_STATS.includes(S.tab) && !["monitor", "documents", "vat"].includes(S.tab));
     S.exportSpec = null;
-    $("#exportBtns").classList.add("hidden");
+    $("#exportBtns")?.classList.add("hidden");
     if (!S.storeId) { view.innerHTML = S.isAdmin ? "" : empty("Nessun negozio associato al tuo account. Contatta l'amministratore."); if (!S.isAdmin) return; S.tab = "admin"; }
     view.classList.add("loading");
     try {
@@ -1209,7 +1219,7 @@
       if (typeof out === "string") out = { html: out };
       view.innerHTML = out.html;
       out.after && out.after();
-      $("#exportBtns").classList.toggle("hidden", typeof S.exportSpec !== "function");
+      $("#exportBtns")?.classList.toggle("hidden", typeof S.exportSpec !== "function");
       $$("[data-go]", view).forEach((b) => b.onclick = () => setTab(b.dataset.go));
     } catch (err) {
       if (seq !== renderSeq) return;
@@ -1290,19 +1300,19 @@
       if (S.from > S.to) [S.from, S.to] = [S.to, S.from];
       S.preset = ""; render();
     };
-    $("#dFrom").onchange = custom; $("#dTo").onchange = custom;
-    $("#storeSelect").onchange = (e) => { S.storeId = e.target.value; store.set("store", S.storeId); S.calMonth = null; render(); };
-    $("#logoutBtn").onclick = async () => { await api.logout(); location.reload(); };
-    $("#dlgClose").onclick = () => $("#dlg").close();
-    $("#xlsBtn").onclick = exportExcel;
-    $("#appBtn").onclick = showAppDialog;
-    $("#pdfBtn").onclick = exportPdf;
-    $("#prnBtn").onclick = printDialog;
-    $("#themeBtn").onclick = () => {
+    on("#dFrom", "onchange", custom); on("#dTo", "onchange", custom);
+    on("#storeSelect", "onchange", (e) => { S.storeId = e.target.value; store.set("store", S.storeId); S.calMonth = null; render(); });
+    on("#logoutBtn", "onclick", async () => { await api.logout(); location.reload(); });
+    on("#dlgClose", "onclick", () => $("#dlg").close());
+    on("#xlsBtn", "onclick", exportExcel);
+    on("#appBtn", "onclick", showAppDialog);
+    on("#pdfBtn", "onclick", exportPdf);
+    on("#prnBtn", "onclick", printDialog);
+    on("#themeBtn", "onclick", () => {
       const curT = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       const next = curT === "dark" ? "light" : "dark";
       document.documentElement.dataset.theme = next; store.set("theme", next); render();
-    };
+    });
   }
 
   async function startApp(user) {
@@ -1343,7 +1353,7 @@
     if (user) return startApp(user);
 
     $("#login").classList.remove("hidden");
-    $("#loginForm").onsubmit = async (e) => {
+    if ($("#loginForm")) $("#loginForm").onsubmit = async (e) => {
       e.preventDefault();
       $("#loginError").textContent = "";
       try {
@@ -1351,7 +1361,7 @@
         startApp(await api.user());
       } catch (err) { $("#loginError").textContent = err.message === "Invalid login credentials" ? "Email o password errati" : err.message; }
     };
-    $("#signupBtn").onclick = async () => {
+    if ($("#signupBtn")) $("#signupBtn").onclick = async () => {
       const em = $("#email").value, pw = $("#password").value;
       if (!em || pw.length < 8) { $("#loginError").textContent = "Inserisci email e una password di almeno 8 caratteri"; return; }
       try {
@@ -1359,7 +1369,7 @@
         $("#loginError").textContent = "Account creato. Conferma dal link ricevuto via email, poi chiedi all'amministratore di abilitarti al negozio.";
       } catch (err) { $("#loginError").textContent = err.message; }
     };
-    $("#forgotBtn").onclick = async () => {
+    if ($("#forgotBtn")) $("#forgotBtn").onclick = async () => {
       const em = $("#email").value;
       if (!em) { $("#loginError").textContent = "Scrivi prima la tua email"; return; }
       try { await api.resetPassword(em); $("#loginError").textContent = "Ti abbiamo inviato un link per reimpostare la password."; } catch (err) { $("#loginError").textContent = err.message; }
